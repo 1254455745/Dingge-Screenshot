@@ -1,8 +1,11 @@
+from html import escape
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timedelta
@@ -72,6 +75,7 @@ LOGO_PATH = APP_DIR / "assets" / "定格截图logo.png"
 GITHUB_URL = "https://github.com/1254455745/Dingge-Screenshot"
 AUTHOR_NAME = "zhenan"
 MAX_CAPTURE_IMAGES_PER_RUN = 10000
+OCR_LANGUAGES = ("chi_sim+eng", "eng")
 
 DEFAULT_WINDOW_WIDTH = 1030
 DEFAULT_WINDOW_HEIGHT = 760
@@ -172,6 +176,18 @@ class BrowserTab:
     tab_index: int
     title: str
     url: str
+
+
+@dataclass
+class CaptureRecord:
+    captured_at: datetime
+    filepath: Path
+    capture_type: str
+    page_title: str = ""
+    url: str = ""
+    browser_name: str = ""
+    ocr_text: str = ""
+    ocr_status: str = ""
 
 
 class SelectionOverlay(QWidget):
@@ -404,6 +420,9 @@ class ScreenshotWindow(QMainWindow):
         self.next_capture_at: Optional[datetime] = None
         self.restore_geometry: Optional[QRect] = None
         self.restore_window_state = None
+        self.report_lock = threading.Lock()
+        self.browser_capture_apps: list[tuple[str, str]] = []
+        self.browser_capture_apps_ready = False
         self.capture_target = CAPTURE_TARGET_FULLSCREEN
         self.region_customized = False
         self.region = self.default_region()
@@ -422,6 +441,8 @@ class ScreenshotWindow(QMainWindow):
             self.add_time(self.current_time_text(), silent=True)
         self.refresh_idle_note()
         QTimer.singleShot(0, self.reflow_dynamic_layouts)
+        if self.system_name == "Darwin":
+            QTimer.singleShot(600, self.warm_browser_capture_permissions)
 
     def default_region(self) -> CaptureRegion:
         screen = QApplication.primaryScreen()
@@ -1190,7 +1211,7 @@ class ScreenshotWindow(QMainWindow):
         dialog.setObjectName("AboutDialog")
         dialog.setWindowTitle(f"关于 {APP_DISPLAY_NAME}")
         dialog.setModal(True)
-        dialog.setFixedWidth(420)
+        dialog.setFixedWidth(600)
         if LOGO_PATH.exists():
             dialog.setWindowIcon(QIcon(app_icon_pixmap(256)))
 
@@ -1236,7 +1257,7 @@ class ScreenshotWindow(QMainWindow):
         ):
             body_line = QLabel(text)
             body_line.setObjectName("AboutBodyText")
-            body_line.setWordWrap(True)
+            body_line.setWordWrap(False)
             body_layout.addWidget(body_line)
         layout.addWidget(body_card)
 
@@ -1993,15 +2014,50 @@ class ScreenshotWindow(QMainWindow):
             raise RuntimeError(message or "执行浏览器自动化脚本失败。") from exc
         return result.stdout.strip()
 
-    def browser_tabs(self, strict_errors: bool = False) -> list[BrowserTab]:
-        tabs: list[BrowserTab] = []
-        errors: list[str] = []
+    def warm_browser_capture_permissions(self):
+        thread = threading.Thread(target=self.warm_browser_capture_permissions_worker, daemon=True)
+        thread.start()
+
+    def warm_browser_capture_permissions_worker(self):
+        available_apps: list[tuple[str, str]] = []
         for app_name, display_name in BROWSER_APPS:
             try:
                 output = self.run_osascript(self.browser_tabs_script(app_name))
+            except RuntimeError:
+                continue
+            if output.strip():
+                available_apps.append((app_name, display_name))
+
+        self.browser_capture_apps = available_apps
+        self.browser_capture_apps_ready = True
+
+    def is_macos_automation_permission_error(self, message: str) -> bool:
+        markers = (
+            "-1743",
+            "not authorized",
+            "not permitted",
+            "not allowed",
+            "未获授权",
+            "没有权限",
+            "不允许",
+        )
+        lower_message = message.lower()
+        return any(marker.lower() in lower_message for marker in markers)
+
+    def browser_tabs(self, strict_errors: bool = False) -> list[BrowserTab]:
+        tabs: list[BrowserTab] = []
+        errors: list[str] = []
+        permission_errors: list[str] = []
+        apps = self.browser_capture_apps if self.browser_capture_apps_ready else []
+        for app_name, display_name in apps:
+            try:
+                output = self.run_osascript(self.browser_tabs_script(app_name))
             except RuntimeError as exc:
-                if strict_errors:
-                    errors.append(f"{display_name}: {exc}")
+                message = str(exc)
+                if self.is_macos_automation_permission_error(message):
+                    permission_errors.append(f"{display_name}: {message}")
+                elif strict_errors:
+                    errors.append(f"{display_name}: {message}")
                 continue
 
             for line in output.splitlines():
@@ -2023,20 +2079,26 @@ class ScreenshotWindow(QMainWindow):
                 except ValueError:
                     continue
 
-        if strict_errors and errors:
-            detail = "\n".join(errors[:4])
+        if strict_errors and not tabs and permission_errors:
+            detail = "\n".join(permission_errors[:4])
             raise RuntimeError(
                 "macOS 还没有允许定格截图控制部分浏览器。\n\n"
                 "请在弹出的系统提示中选择“允许”，或到“系统设置 > 隐私与安全性 > 自动化”里手动开启。\n\n"
                 f"{detail}"
             )
+        if strict_errors and not tabs and errors:
+            detail = "\n".join(errors[:4])
+            raise RuntimeError(
+                "检测到了浏览器，但没有成功读取到标签页。\n\n"
+                "这通常是某个浏览器不支持当前的自动化脚本，不是权限开关没打开。\n\n"
+                f"{detail}"
+            )
+        if strict_errors and not tabs and not self.browser_capture_apps_ready:
+            raise RuntimeError("浏览器权限预热还没有完成，请稍等几秒后再开始。")
         return tabs
 
     def ensure_browser_capture_ready(self):
         if self.system_name == "Darwin":
-            tabs = self.browser_tabs(strict_errors=True)
-            if not tabs:
-                raise RuntimeError("没有检测到已打开的浏览器标签页。请先打开浏览器页面。")
             return
 
         if self.system_name == "Windows":
@@ -2130,9 +2192,267 @@ class ScreenshotWindow(QMainWindow):
         cleaned = cleaned.strip("._")
         return (cleaned or default)[:60]
 
-    def save_browser_page_screenshots(self, timestamp: str, max_count: int) -> int:
+    def report_image_src(self, image_path: Path, report_dir: Path) -> str:
+        if image_path.parent == report_dir:
+            return image_path.name
+        return image_path.as_posix()
+
+    def ocr_image_text(self, image_path: Path) -> tuple[str, str]:
+        tesseract = shutil.which("tesseract")
+        if not tesseract:
+            return "", "OCR 未启用：未检测到 Tesseract"
+
+        last_error = ""
+        for language in OCR_LANGUAGES:
+            command = [tesseract, str(image_path), "stdout", "-l", language]
+            try:
+                result = subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                )
+            except subprocess.TimeoutExpired:
+                return "", "OCR 超时"
+            except subprocess.CalledProcessError as exc:
+                last_error = (exc.stderr or exc.stdout or str(exc)).strip()
+                continue
+
+            text = result.stdout.strip()
+            if language == OCR_LANGUAGES[0]:
+                return text, "OCR 完成"
+            return text, "OCR 完成（英文模型）"
+
+        return "", f"OCR 失败：{last_error or '识别引擎没有返回结果'}"
+
+    def queue_capture_report(self, timestamp: str, records: list[CaptureRecord]):
+        if not records:
+            return
+
+        thread = threading.Thread(
+            target=self.write_capture_report_safely,
+            args=(timestamp, records),
+            daemon=True,
+        )
+        thread.start()
+
+    def write_capture_report_safely(self, timestamp: str, records: list[CaptureRecord]):
+        try:
+            self.write_capture_report(timestamp, records)
+        except Exception as exc:  # noqa: BLE001
+            log_path = self.save_dir / "report_errors.log"
+            with self.report_lock:
+                with log_path.open("a", encoding="utf-8") as file:
+                    file.write(f"{datetime.now().isoformat(timespec='seconds')} {exc}\n")
+
+    def write_capture_report(self, timestamp: str, records: list[CaptureRecord]):
+        for record in records:
+            record.ocr_text, record.ocr_status = self.ocr_image_text(record.filepath)
+
+        report_dir = self.save_dir
+        report_path = self.save_dir / f"capture_{timestamp}.html"
+
+        with self.report_lock:
+            report_path.write_text(
+                self.capture_report_html(timestamp, records, report_dir),
+                encoding="utf-8",
+            )
+
+    def capture_report_html(self, timestamp: str, records: list[CaptureRecord], report_dir: Path) -> str:
+        generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        first_time = records[0].captured_at.strftime("%Y-%m-%d %H:%M:%S")
+        cards = "\n".join(self.capture_report_card(record, report_dir, index) for index, record in enumerate(records, 1))
+        return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>定格截图报告 {escape(timestamp)}</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f5f5f7;
+      --panel: #ffffff;
+      --text: #1d1d1f;
+      --muted: #6e6e73;
+      --line: #dedee6;
+      --blue: #0a84ff;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.55;
+    }}
+    main {{
+      width: min(1180px, calc(100% - 40px));
+      margin: 28px auto 44px;
+    }}
+    header {{
+      margin-bottom: 18px;
+    }}
+    h1 {{
+      margin: 0 0 8px;
+      font-size: 28px;
+      letter-spacing: 0;
+    }}
+    .summary {{
+      color: var(--muted);
+      font-size: 14px;
+    }}
+    .shot-card {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      margin-top: 16px;
+      overflow: hidden;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.045);
+    }}
+    .meta {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 16px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+    }}
+    .meta div {{
+      min-width: 0;
+    }}
+    .label {{
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 2px;
+    }}
+    .value {{
+      word-break: break-word;
+      font-weight: 600;
+    }}
+    .canvas-wrap {{
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #fafafa;
+    }}
+    canvas {{
+      display: none;
+      width: 100%;
+      height: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: white;
+    }}
+    .shot-image {{
+      display: block;
+      width: 100%;
+      height: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: white;
+    }}
+    .ocr {{
+      padding: 16px 18px 18px;
+    }}
+    .ocr h2 {{
+      margin: 0 0 8px;
+      font-size: 16px;
+    }}
+    pre {{
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+      padding: 12px;
+      min-height: 56px;
+      background: #f5f5f7;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: #2d2d31;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+    }}
+    .status {{
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 8px;
+    }}
+    @media (max-width: 720px) {{
+      main {{ width: min(100% - 24px, 1180px); margin-top: 18px; }}
+      .meta {{ grid-template-columns: 1fr; }}
+      h1 {{ font-size: 24px; }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>定格截图报告</h1>
+      <div class="summary">截图时间：{escape(first_time)} · 本次截图：{len(records)} 张 · 报告生成：{escape(generated_at)}</div>
+    </header>
+    {cards}
+  </main>
+  <script>
+    document.querySelectorAll("canvas[data-src]").forEach((canvas) => {{
+      const ctx = canvas.getContext("2d");
+      const img = new Image();
+      img.onload = () => {{
+        canvas.width = img.naturalWidth || img.width;
+        canvas.height = img.naturalHeight || img.height;
+        ctx.drawImage(img, 0, 0);
+        canvas.style.display = "block";
+        const fallback = canvas.nextElementSibling;
+        if (fallback) fallback.style.display = "none";
+      }};
+      img.onerror = () => {{
+        canvas.width = 1200;
+        canvas.height = 180;
+        ctx.fillStyle = "#f5f5f7";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#6e6e73";
+        ctx.font = "28px sans-serif";
+        ctx.fillText("图片加载失败：" + canvas.dataset.src, 32, 96);
+      }};
+      img.src = canvas.dataset.src;
+    }});
+  </script>
+</body>
+</html>
+"""
+
+    def capture_report_card(self, record: CaptureRecord, report_dir: Path, index: int) -> str:
+        image_src = self.report_image_src(record.filepath, report_dir)
+        title = record.page_title or record.capture_type
+        browser = record.browser_name or "-"
+        url = record.url or "-"
+        ocr_text = record.ocr_text.strip() or "未识别到文字。"
+        return f"""
+    <section class="shot-card">
+      <div class="meta">
+        <div><span class="label">序号</span><span class="value">{index}</span></div>
+        <div><span class="label">截图时间</span><span class="value">{escape(record.captured_at.strftime("%Y-%m-%d %H:%M:%S"))}</span></div>
+        <div><span class="label">截图方式</span><span class="value">{escape(record.capture_type)}</span></div>
+        <div><span class="label">浏览器</span><span class="value">{escape(browser)}</span></div>
+        <div><span class="label">页面标题</span><span class="value">{escape(title)}</span></div>
+        <div><span class="label">页面地址</span><span class="value">{escape(url)}</span></div>
+        <div><span class="label">截图文件</span><span class="value">{escape(record.filepath.name)}</span></div>
+      </div>
+      <div class="canvas-wrap">
+        <canvas data-src="{escape(image_src, quote=True)}"></canvas>
+        <img class="shot-image" src="{escape(image_src, quote=True)}" alt="截图 {index}">
+      </div>
+      <div class="ocr">
+        <h2>OCR 识别内容</h2>
+        <div class="status">{escape(record.ocr_status or "OCR 状态未知")}</div>
+        <pre>{escape(ocr_text)}</pre>
+      </div>
+    </section>
+"""
+
+    def save_browser_page_screenshots(self, timestamp: str, max_count: int) -> list[CaptureRecord]:
         if max_count <= 0:
-            return 0
+            return []
 
         if self.system_name == "Windows":
             return self.save_windows_browser_page_screenshots(timestamp, max_count)
@@ -2143,10 +2463,10 @@ class ScreenshotWindow(QMainWindow):
         if not tabs:
             raise RuntimeError("没有检测到已打开的浏览器标签页。")
 
-        saved_count = 0
+        records: list[CaptureRecord] = []
         try:
             for index, tab in enumerate(tabs, start=1):
-                if saved_count >= max_count:
+                if len(records) >= max_count:
                     break
 
                 self.activate_browser_tab(tab)
@@ -2159,13 +2479,22 @@ class ScreenshotWindow(QMainWindow):
                 title = self.safe_filename_part(tab.title, f"page_{index}")
                 filepath = self.save_dir / f"browser_{timestamp}_{index:03d}_{browser_name}_{title}.png"
                 self.capture_region_with_screencapture(region, filepath)
-                saved_count += 1
+                records.append(
+                    CaptureRecord(
+                        captured_at=datetime.now(),
+                        filepath=filepath,
+                        capture_type="浏览器页面",
+                        page_title=tab.title,
+                        url=tab.url,
+                        browser_name=tab.display_name,
+                    )
+                )
         finally:
             self.showNormal()
             self.raise_()
             self.activateWindow()
 
-        return saved_count
+        return records
 
     def windows_api(self):
         try:
@@ -2249,9 +2578,9 @@ class ScreenshotWindow(QMainWindow):
         user32.keybd_event(vk_tab, 0, keyeventf_keyup, 0)
         user32.keybd_event(vk_control, 0, keyeventf_keyup, 0)
 
-    def save_windows_browser_page_screenshots(self, timestamp: str, max_count: int) -> int:
+    def save_windows_browser_page_screenshots(self, timestamp: str, max_count: int) -> list[CaptureRecord]:
         if max_count <= 0:
-            return 0
+            return []
 
         if ImageGrab is None:
             raise RuntimeError("当前系统缺少 Pillow，无法在 Windows 上截图。")
@@ -2264,10 +2593,10 @@ class ScreenshotWindow(QMainWindow):
         QApplication.processEvents()
         time.sleep(0.35)
 
-        saved_count = 0
+        records: list[CaptureRecord] = []
         try:
             for window_index, (hwnd, browser_name, _title) in enumerate(browser_windows, start=1):
-                if saved_count >= max_count:
+                if len(records) >= max_count:
                     break
 
                 self.activate_windows_window(hwnd)
@@ -2276,7 +2605,7 @@ class ScreenshotWindow(QMainWindow):
                 seen_titles: set[str] = set()
 
                 for _ in range(WINDOWS_BROWSER_TAB_SAFETY_LIMIT):
-                    if saved_count >= max_count:
+                    if len(records) >= max_count:
                         break
 
                     current_title = self.windows_window_title(hwnd)
@@ -2287,13 +2616,21 @@ class ScreenshotWindow(QMainWindow):
                     title_part = self.safe_filename_part(current_title, f"tab_{len(seen_titles)}")
                     filepath = (
                         self.save_dir
-                        / f"browser_{timestamp}_{saved_count + 1:03d}_{browser_name}_w{window_index}_{title_part}.png"
+                        / f"browser_{timestamp}_{len(records) + 1:03d}_{browser_name}_w{window_index}_{title_part}.png"
                     )
                     image = ImageGrab.grab()
                     image.save(filepath)
-                    saved_count += 1
+                    records.append(
+                        CaptureRecord(
+                            captured_at=datetime.now(),
+                            filepath=filepath,
+                            capture_type="浏览器页面",
+                            page_title=current_title,
+                            browser_name=browser_name,
+                        )
+                    )
 
-                    if saved_count >= max_count:
+                    if len(records) >= max_count:
                         break
 
                     self.send_windows_ctrl_tab()
@@ -2307,7 +2644,7 @@ class ScreenshotWindow(QMainWindow):
             self.raise_()
             self.activateWindow()
 
-        return saved_count
+        return records
 
     def start_capture(self):
         if self.running:
@@ -2440,12 +2777,23 @@ class ScreenshotWindow(QMainWindow):
             return 0
 
         if self.capture_target == CAPTURE_TARGET_BROWSER:
-            return self.save_browser_page_screenshots(timestamp, remaining_count)
+            records = self.save_browser_page_screenshots(timestamp, remaining_count)
+            self.queue_capture_report(timestamp, records)
+            return len(records)
 
         filepath = self.save_dir / f"screenshot_{timestamp}.png"
 
         if self.system_name == "Darwin":
             self.capture_region_with_screencapture(self.region, filepath)
+            records = [
+                CaptureRecord(
+                    captured_at=datetime.now(),
+                    filepath=filepath,
+                    capture_type="全屏截图" if self.capture_target == CAPTURE_TARGET_FULLSCREEN else "选取区域",
+                    page_title="全屏截图" if self.capture_target == CAPTURE_TARGET_FULLSCREEN else "选取区域截图",
+                )
+            ]
+            self.queue_capture_report(timestamp, records)
             return 1
 
         if ImageGrab is None:
@@ -2460,6 +2808,15 @@ class ScreenshotWindow(QMainWindow):
             )
         )
         image.save(filepath)
+        records = [
+            CaptureRecord(
+                captured_at=datetime.now(),
+                filepath=filepath,
+                capture_type="全屏截图" if self.capture_target == CAPTURE_TARGET_FULLSCREEN else "选取区域",
+                page_title="全屏截图" if self.capture_target == CAPTURE_TARGET_FULLSCREEN else "选取区域截图",
+            )
+        ]
+        self.queue_capture_report(timestamp, records)
         return 1
 
 

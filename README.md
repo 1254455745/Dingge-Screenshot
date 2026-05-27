@@ -11,6 +11,8 @@
 - 支持预览当前选区范围
 - 支持批量截取已打开浏览器页面
 - 支持自定义保存目录，并可一键打开保存目录
+- 每次截图后自动生成 HTML 报告
+- 可选 OCR 识别截图中的文字
 - 单次运行最多保存 10,000 张截图，达到上限后自动停止
 
 ## 运行环境
@@ -19,6 +21,7 @@
 - macOS / Windows
 - PySide6_Essentials
 - Windows 截图需要 Pillow
+- OCR 识别需要额外安装 Tesseract OCR；中文识别需要中文语言包
 
 ## 项目结构
 
@@ -64,6 +67,42 @@ macOS 也可以双击：
 
 - `启动定格截图.command`
 - `定格截图.app`
+
+## HTML 报告
+
+每次截图触发后，软件会在后台生成一份 HTML 报告。
+
+例如每小时截图一次，保存目录中会出现类似文件：
+
+```text
+screenshots/
+├── screenshot_20260527_220000.png
+└── capture_20260527_220000.html
+```
+
+如果一次触发截取了多个浏览器标签页，这些截图会放在同一份 HTML 报告里。
+
+HTML 报告包含：
+
+- 截图时间
+- 截图方式
+- 浏览器名称
+- 页面标题
+- 页面地址
+- 截图图片
+- OCR 识别内容
+
+## OCR 识别
+
+OCR 是可选功能。没有安装 OCR 引擎时，截图和 HTML 报告仍然会正常生成，报告里会显示 OCR 未启用。中文内容需要安装中文语言包，否则可能只能用英文模型识别。
+
+macOS 可以安装：
+
+```bash
+brew install tesseract tesseract-lang
+```
+
+Windows 需要安装 Tesseract OCR，并把 `tesseract` 加入系统 PATH。
 
 ## PyCharm 使用
 
