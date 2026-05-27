@@ -544,17 +544,17 @@ class ScreenshotWindow(QMainWindow):
         self.path_value.setWordWrap(True)
         self.path_value.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-        choose_btn = self.make_button("选择", "secondary")
-        choose_btn.setFixedSize(64, 42)
-        choose_btn.clicked.connect(self.choose_directory)
+        self.choose_dir_button = self.make_button("选择", "secondary")
+        self.choose_dir_button.setFixedSize(64, 42)
+        self.choose_dir_button.clicked.connect(self.choose_directory)
 
-        open_btn = self.make_button("打开", "secondary")
-        open_btn.setFixedSize(64, 42)
-        open_btn.clicked.connect(self.open_save_directory)
+        self.open_dir_button = self.make_button("打开", "secondary")
+        self.open_dir_button.setFixedSize(64, 42)
+        self.open_dir_button.clicked.connect(self.open_save_directory)
 
         layout.addWidget(self.path_value, 1, 0)
-        layout.addWidget(choose_btn, 1, 1)
-        layout.addWidget(open_btn, 1, 2)
+        layout.addWidget(self.choose_dir_button, 1, 1)
+        layout.addWidget(self.open_dir_button, 1, 2)
         layout.setColumnStretch(0, 1)
         return layout
 
@@ -711,12 +711,12 @@ class ScreenshotWindow(QMainWindow):
 
         add_row = QHBoxLayout()
         add_row.setSpacing(10)
-        add_btn = self.make_button("添加时间点", "secondary")
-        add_btn.setFixedWidth(120)
-        add_btn.setFixedHeight(42)
-        add_btn.clicked.connect(lambda: self.add_time(self.daily_time.time().toString("HH:mm")))
+        self.add_time_button = self.make_button("添加时间点", "secondary")
+        self.add_time_button.setFixedWidth(120)
+        self.add_time_button.setFixedHeight(42)
+        self.add_time_button.clicked.connect(lambda: self.add_time(self.daily_time.time().toString("HH:mm")))
         add_row.addWidget(self.build_daily_time_control())
-        add_row.addWidget(add_btn)
+        add_row.addWidget(self.add_time_button)
         add_row.addStretch(1)
         layout.addLayout(add_row)
 
@@ -781,6 +781,7 @@ class ScreenshotWindow(QMainWindow):
             lambda: self.add_time(self.daily_time.time().toString("HH:mm"))
         )
 
+        self.daily_time_step_buttons = []
         stepper = QFrame()
         stepper.setObjectName("TimeInputStepper")
         stepper.setFixedSize(24, 34)
@@ -798,6 +799,7 @@ class ScreenshotWindow(QMainWindow):
             button.setToolTip(tip)
             button.clicked.connect(lambda _checked=False, value=minutes: self.step_daily_time(value))
             stepper_layout.addWidget(button)
+            self.daily_time_step_buttons.append(button)
 
         layout.addWidget(self.daily_time, 1)
         layout.addWidget(stepper)
@@ -1630,7 +1632,36 @@ class ScreenshotWindow(QMainWindow):
         super().closeEvent(event)
 
     def refresh_path(self):
-        self.path_value.setText(str(self.save_dir))
+        self.path_value.setText(f"{self.save_dir}\n按日期自动保存到 {self.dated_save_dir().name}/")
+
+    def dated_save_dir(self, captured_at: Optional[datetime] = None) -> Path:
+        value = captured_at or datetime.now()
+        return self.save_dir / value.strftime("%Y-%m-%d")
+
+    def set_capture_options_locked(self, locked: bool):
+        widgets = [
+            self.choose_dir_button,
+            self.interval_button,
+            self.minute_button,
+            self.daily_button,
+            self.mode_stack,
+            self.fullscreen_region_button,
+            self.custom_region_button,
+            self.browser_pages_button,
+            self.reselect_region_button,
+            self.add_time_button,
+            self.daily_time,
+            *self.daily_time_step_buttons,
+        ]
+        for button in self.unit_group.buttons():
+            widgets.append(button)
+        for button in self.minute_group.buttons():
+            widgets.append(button)
+
+        for widget in widgets:
+            widget.setEnabled(not locked)
+
+        self.sync_region_buttons()
 
     def refresh_region(self):
         if self.capture_target == CAPTURE_TARGET_BROWSER:
@@ -1669,6 +1700,9 @@ class ScreenshotWindow(QMainWindow):
             self.note_label.setText("请先添加至少一个时间点")
 
     def choose_directory(self):
+        if self.running:
+            return
+
         chosen = QFileDialog.getExistingDirectory(self, "选择保存位置", str(self.save_dir))
         if chosen:
             self.save_dir = Path(chosen)
@@ -1680,6 +1714,9 @@ class ScreenshotWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.save_dir)))
 
     def set_mode(self, index: int):
+        if self.running:
+            return
+
         self.interval_button.setChecked(index == 0)
         self.minute_button.setChecked(index == 1)
         self.daily_button.setChecked(index == 2)
@@ -1712,6 +1749,8 @@ class ScreenshotWindow(QMainWindow):
         return int(button.property("minutes")) if button else 5
 
     def step_daily_time(self, minutes: int):
+        if self.running:
+            return
         self.daily_time.setTime(self.daily_time.time().addSecs(minutes * 60))
 
     def refresh_interval_preview(self):
@@ -1736,6 +1775,9 @@ class ScreenshotWindow(QMainWindow):
         self.minute_preview.setText(text)
 
     def add_time(self, value: str, silent: bool = False):
+        if self.running:
+            return
+
         if value not in self.daily_times:
             self.daily_times.append(value)
             self.daily_times.sort()
@@ -1744,6 +1786,9 @@ class ScreenshotWindow(QMainWindow):
             self.refresh_idle_note()
 
     def remove_time(self, value: str):
+        if self.running:
+            return
+
         self.daily_times = [item for item in self.daily_times if item != value]
         self.render_time_chips()
         self.refresh_idle_note()
@@ -1793,6 +1838,10 @@ class ScreenshotWindow(QMainWindow):
         self.current_time_viewport_width = viewport_width
 
     def use_fullscreen_region(self):
+        if self.running:
+            self.sync_region_buttons()
+            return
+
         self.capture_target = CAPTURE_TARGET_FULLSCREEN
         self.region = self.default_region()
         self.region_customized = False
@@ -1800,6 +1849,10 @@ class ScreenshotWindow(QMainWindow):
         self.refresh_region()
 
     def use_custom_region(self):
+        if self.running:
+            self.sync_region_buttons()
+            return
+
         self.capture_target = CAPTURE_TARGET_CUSTOM
         if self.custom_region is None:
             self.select_region()
@@ -1811,6 +1864,10 @@ class ScreenshotWindow(QMainWindow):
         self.refresh_region()
 
     def use_browser_pages(self):
+        if self.running:
+            self.sync_region_buttons()
+            return
+
         self.capture_target = CAPTURE_TARGET_BROWSER
         self.region_customized = False
         self.region = self.default_region()
@@ -1818,6 +1875,10 @@ class ScreenshotWindow(QMainWindow):
         self.refresh_region()
 
     def select_region(self):
+        if self.running:
+            self.sync_region_buttons()
+            return
+
         screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
         if screen is None:
             QMessageBox.warning(self, "无法选择", "没有检测到可用屏幕。")
@@ -1975,10 +2036,17 @@ class ScreenshotWindow(QMainWindow):
         self.custom_region_button.setChecked(self.capture_target == CAPTURE_TARGET_CUSTOM)
         self.browser_pages_button.setChecked(self.capture_target == CAPTURE_TARGET_BROWSER)
         is_custom_target = self.capture_target == CAPTURE_TARGET_CUSTOM
+        is_unlocked = not self.running
         self.preview_region_button.setVisible(is_custom_target)
         self.preview_region_button.setEnabled(self.custom_region is not None)
         self.reselect_region_button.setVisible(is_custom_target)
-        self.reselect_region_button.setEnabled(self.custom_region is not None)
+        self.reselect_region_button.setEnabled(is_unlocked and self.custom_region is not None)
+        for button in (
+            self.fullscreen_region_button,
+            self.custom_region_button,
+            self.browser_pages_button,
+        ):
+            button.setEnabled(is_unlocked)
 
     def restore_main_window(self):
         geometry = self.restore_geometry
@@ -2208,14 +2276,15 @@ class ScreenshotWindow(QMainWindow):
         try:
             self.write_capture_report(timestamp, records)
         except Exception as exc:  # noqa: BLE001
-            log_path = self.save_dir / "report_errors.log"
+            log_dir = records[0].filepath.parent if records else self.dated_save_dir()
+            log_path = log_dir / "report_errors.log"
             with self.report_lock:
                 with log_path.open("a", encoding="utf-8") as file:
                     file.write(f"{datetime.now().isoformat(timespec='seconds')} {exc}\n")
 
     def write_capture_report(self, timestamp: str, records: list[CaptureRecord]):
-        report_dir = self.save_dir
-        report_path = self.save_dir / f"capture_{timestamp}.html"
+        report_dir = records[0].filepath.parent
+        report_path = report_dir / f"capture_{timestamp}.html"
 
         with self.report_lock:
             report_path.write_text(
@@ -2391,12 +2460,12 @@ class ScreenshotWindow(QMainWindow):
     </section>
 """
 
-    def save_browser_page_screenshots(self, timestamp: str, max_count: int) -> list[CaptureRecord]:
+    def save_browser_page_screenshots(self, timestamp: str, max_count: int, output_dir: Path) -> list[CaptureRecord]:
         if max_count <= 0:
             return []
 
         if self.system_name == "Windows":
-            return self.save_windows_browser_page_screenshots(timestamp, max_count)
+            return self.save_windows_browser_page_screenshots(timestamp, max_count, output_dir)
         if self.system_name != "Darwin":
             raise RuntimeError("浏览器页面截图目前只支持 macOS 和 Windows。")
 
@@ -2418,7 +2487,7 @@ class ScreenshotWindow(QMainWindow):
                 region = self.front_browser_window_region(tab.app_name)
                 browser_name = self.safe_filename_part(tab.display_name, "Browser")
                 title = self.safe_filename_part(tab.title, f"page_{index}")
-                filepath = self.save_dir / f"browser_{timestamp}_{index:03d}_{browser_name}_{title}.png"
+                filepath = output_dir / f"browser_{timestamp}_{index:03d}_{browser_name}_{title}.png"
                 self.capture_region_with_screencapture(region, filepath)
                 records.append(
                     CaptureRecord(
@@ -2519,7 +2588,7 @@ class ScreenshotWindow(QMainWindow):
         user32.keybd_event(vk_tab, 0, keyeventf_keyup, 0)
         user32.keybd_event(vk_control, 0, keyeventf_keyup, 0)
 
-    def save_windows_browser_page_screenshots(self, timestamp: str, max_count: int) -> list[CaptureRecord]:
+    def save_windows_browser_page_screenshots(self, timestamp: str, max_count: int, output_dir: Path) -> list[CaptureRecord]:
         if max_count <= 0:
             return []
 
@@ -2556,7 +2625,7 @@ class ScreenshotWindow(QMainWindow):
                     seen_titles.add(current_title)
                     title_part = self.safe_filename_part(current_title, f"tab_{len(seen_titles)}")
                     filepath = (
-                        self.save_dir
+                        output_dir
                         / f"browser_{timestamp}_{len(records) + 1:03d}_{browser_name}_w{window_index}_{title_part}.png"
                     )
                     image = ImageGrab.grab()
@@ -2609,13 +2678,14 @@ class ScreenshotWindow(QMainWindow):
                 )
                 return
 
-        self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.dated_save_dir().mkdir(parents=True, exist_ok=True)
         self.running = True
         self.capture_count = 0
         self.count_card.set_value("0")
         self.status_card.set_value("等待执行")
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.set_capture_options_locked(True)
         self.schedule_next_capture()
 
     def stop_capture(self):
@@ -2625,6 +2695,7 @@ class ScreenshotWindow(QMainWindow):
         self.status_card.set_value("已停止")
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
+        self.set_capture_options_locked(False)
         self.refresh_idle_note()
 
     def schedule_next_capture(self):
@@ -2689,6 +2760,7 @@ class ScreenshotWindow(QMainWindow):
             self.status_card.set_value("运行失败")
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
+            self.set_capture_options_locked(False)
             self.note_label.setText(f"截图失败：{exc}")
             QMessageBox.critical(
                 self,
@@ -2706,23 +2778,27 @@ class ScreenshotWindow(QMainWindow):
             self.status_card.set_value("已完成")
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
+            self.set_capture_options_locked(False)
             self.note_label.setText(f"已达到单次 {MAX_CAPTURE_IMAGES_PER_RUN:,} 张上限，截图已自动停止")
             return
 
         self.schedule_next_capture()
 
     def save_screenshot(self):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        captured_at = datetime.now()
+        timestamp = captured_at.strftime("%Y%m%d_%H%M%S")
+        output_dir = self.dated_save_dir(captured_at)
+        output_dir.mkdir(parents=True, exist_ok=True)
         remaining_count = MAX_CAPTURE_IMAGES_PER_RUN - self.capture_count
         if remaining_count <= 0:
             return 0
 
         if self.capture_target == CAPTURE_TARGET_BROWSER:
-            records = self.save_browser_page_screenshots(timestamp, remaining_count)
+            records = self.save_browser_page_screenshots(timestamp, remaining_count, output_dir)
             self.queue_capture_report(timestamp, records)
             return len(records)
 
-        filepath = self.save_dir / f"screenshot_{timestamp}.png"
+        filepath = output_dir / f"screenshot_{timestamp}.png"
 
         if self.system_name == "Darwin":
             self.capture_region_with_screencapture(self.region, filepath)
