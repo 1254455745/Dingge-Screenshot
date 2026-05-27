@@ -60,30 +60,23 @@ jobs:
         with:
           path: release-assets
       - name: Publish GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          cat > release-notes.md <<'EOF'
-          ## 定格截图
+        uses: softprops/action-gh-release@v3
+        with:
+          name: 定格截图 ${{ github.ref_name }}
+          body: |
+            ## 定格截图
 
-          ### 功能
-          - 支持全屏截图、自定义区域截图
-          - 支持已打开浏览器页面批量截图
-          - 浏览器截图会自动生成 HTML 查看页面
-          - 支持定时间隔截图
-          - 支持保存目录选择和打开
-          - 支持 macOS 和 Windows
+            ### 功能
+            - 支持全屏截图、自定义区域截图
+            - 支持已打开浏览器页面批量截图
+            - 浏览器截图会自动生成 HTML 查看页面
+            - 支持定时间隔截图
+            - 支持保存目录选择和打开
+            - 支持 macOS 和 Windows
 
-          ### 下载
-          - macOS 用户下载 `定格截图-macOS.dmg` 或 `定格截图-macOS.zip`
-          - Windows 用户下载 `定格截图-Windows.zip`
-          EOF
-
-          mapfile -d '' files < <(find release-assets -type f -print0)
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
-              --title "定格截图 ${GITHUB_REF_NAME}" \
-              --notes-file release-notes.md
-          fi
+            ### 下载
+            - macOS 用户下载 `定格截图-macOS.dmg` 或 `定格截图-macOS.zip`
+            - Windows 用户下载 `定格截图-Windows.zip`
+          append_body: true
+          fail_on_unmatched_files: true
+          files: release-assets/**/*
