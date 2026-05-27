@@ -75,6 +75,22 @@ macOS 也可以双击：
 - `启动定格截图.command`
 - `定格截图.app`
 
+## 打包
+
+macOS：
+
+```bash
+bash scripts/build_macos.sh
+```
+
+Windows：
+
+```powershell
+.\scripts\build_windows.ps1
+```
+
+打包文件会生成在 `dist/` 目录中。
+
 ## HTML 报告
 
 每次截图触发后，软件会在后台生成一份 HTML 报告。

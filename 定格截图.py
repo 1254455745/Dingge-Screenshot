@@ -69,7 +69,23 @@ SETTINGS_APPLICATION = "TimedScreenshotTool"
 SETTINGS_LAYOUT_VERSION = 7
 APP_DISPLAY_NAME = "定格截图"
 APP_VERSION = "1.0"
-APP_DIR = Path(__file__).resolve().parent
+
+
+def app_base_dir() -> Path:
+    frozen_dir = getattr(sys, "_MEIPASS", None)
+    if frozen_dir:
+        return Path(frozen_dir)
+    return Path(__file__).resolve().parent
+
+
+def default_save_dir() -> Path:
+    documents_dir = Path.home() / "Documents"
+    if not documents_dir.exists():
+        documents_dir = Path.home()
+    return documents_dir / "Dingge-Screenshot" / "screenshots"
+
+
+APP_DIR = app_base_dir()
 LOGO_PATH = APP_DIR / "assets" / "定格截图logo.png"
 GITHUB_URL = "https://github.com/1254455745/Dingge-Screenshot"
 AUTHOR_NAME = "zhenan"
@@ -408,7 +424,7 @@ class ScreenshotWindow(QMainWindow):
 
         self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
         self.system_name = platform.system()
-        self.save_dir = Path.cwd() / "screenshots"
+        self.save_dir = default_save_dir()
         self.capture_count = 0
         self.running = False
         self.overlay: Optional[SelectionOverlay] = None
@@ -438,6 +454,7 @@ class ScreenshotWindow(QMainWindow):
         self.refresh_idle_note()
         QTimer.singleShot(0, self.reflow_dynamic_layouts)
         if self.system_name == "Darwin":
+            QTimer.singleShot(400, self.warm_screen_recording_permission)
             QTimer.singleShot(600, self.warm_browser_capture_permissions)
 
     def default_region(self) -> CaptureRegion:
@@ -1957,6 +1974,13 @@ class ScreenshotWindow(QMainWindow):
                 "系统没有成功读取当前选区。请确认已经给 PyCharm、Python 或定格截图开启“屏幕录制”权限。"
             ) from exc
 
+    def warm_screen_recording_permission(self):
+        if self.system_name != "Darwin":
+            return
+
+        thread = threading.Thread(target=self.capture_full_screen_pixmap, daemon=True)
+        thread.start()
+
     def capture_region_pixmap(self, region: CaptureRegion) -> QPixmap:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
             temp_path = Path(temp_file.name)
@@ -2802,15 +2826,6 @@ class ScreenshotWindow(QMainWindow):
 
         if self.system_name == "Darwin":
             self.capture_region_with_screencapture(self.region, filepath)
-            records = [
-                CaptureRecord(
-                    captured_at=datetime.now(),
-                    filepath=filepath,
-                    capture_type="全屏截图" if self.capture_target == CAPTURE_TARGET_FULLSCREEN else "选取区域",
-                    page_title="全屏截图" if self.capture_target == CAPTURE_TARGET_FULLSCREEN else "选取区域截图",
-                )
-            ]
-            self.queue_capture_report(timestamp, records)
             return 1
 
         if ImageGrab is None:
@@ -2825,15 +2840,6 @@ class ScreenshotWindow(QMainWindow):
             )
         )
         image.save(filepath)
-        records = [
-            CaptureRecord(
-                captured_at=datetime.now(),
-                filepath=filepath,
-                capture_type="全屏截图" if self.capture_target == CAPTURE_TARGET_FULLSCREEN else "选取区域",
-                page_title="全屏截图" if self.capture_target == CAPTURE_TARGET_FULLSCREEN else "选取区域截图",
-            )
-        ]
-        self.queue_capture_report(timestamp, records)
         return 1
 
 

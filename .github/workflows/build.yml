@@ -1,0 +1,43 @@
+name: Build Apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  macos:
+    name: macOS app
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build macOS app
+        run: bash scripts/build_macos.sh
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: dingge-screenshot-macos
+          path: |
+            dist/定格截图-macOS.zip
+            dist/定格截图-macOS.dmg
+
+  windows:
+    name: Windows app
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build Windows app
+        shell: pwsh
+        run: .\scripts\build_windows.ps1
+      - name: Upload Windows app
+        uses: actions/upload-artifact@v4
+        with:
+          name: dingge-screenshot-windows
+          path: dist/定格截图-Windows.zip
