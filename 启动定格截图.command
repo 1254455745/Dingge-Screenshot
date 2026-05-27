@@ -1,5 +1,11 @@
 #!/bin/zsh
 
-cd "/Users/anzhen/Documents/定点截图软件-项目" || exit 1
-export TK_SILENCE_DEPRECATION=1
-/usr/bin/python3 "/Users/anzhen/Documents/定点截图软件-项目/定格截图.py"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON_BIN="$PROJECT_DIR/.venv/bin/python"
+
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="$(command -v python3)"
+fi
+
+cd "$PROJECT_DIR" || exit 1
+"$PYTHON_BIN" "$PROJECT_DIR/定格截图.py"

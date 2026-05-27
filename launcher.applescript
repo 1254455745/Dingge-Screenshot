@@ -1,3 +1,4 @@
 on run
-	do shell script "cd " & quoted form of POSIX path of "/Users/anzhen/Documents/定点截图软件-项目" & " && export TK_SILENCE_DEPRECATION=1 && /usr/bin/python3 " & quoted form of POSIX path of "/Users/anzhen/Documents/定点截图软件-项目/定格截图.py" & " >/tmp/定格截图.log 2>&1 &"
+	set selfPath to POSIX path of (path to me)
+	do shell script "self_path=" & quoted form of selfPath & "; project_dir=$(dirname \"$self_path\"); python_bin=\"$project_dir/.venv/bin/python\"; if [ ! -x \"$python_bin\" ]; then python_bin=$(command -v python3); fi; cd \"$project_dir\" && \"$python_bin\" \"$project_dir/定格截图.py\" >/tmp/dingge-screenshot.log 2>&1 &"
 end run

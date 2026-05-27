@@ -1,6 +1,9 @@
 import platform
+import re
 import subprocess
 import sys
+import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
@@ -12,12 +15,22 @@ except ImportError:
     ImageGrab = None
 
 try:
-    from PySide6.QtCore import QPoint, QRect, QSettings, QSize, QTimer, Qt, Signal
-    from PySide6.QtGui import QColor, QCursor, QFont, QPainter, QPen, QPixmap
+    from PySide6.QtCore import QByteArray, QPoint, QRect, QSettings, QSize, QTimer, Qt, QUrl, Signal
+    from PySide6.QtGui import (
+        QColor,
+        QCursor,
+        QDesktopServices,
+        QFont,
+        QIcon,
+        QPainter,
+        QPen,
+        QPixmap,
+    )
     from PySide6.QtWidgets import (
         QApplication,
         QAbstractSpinBox,
         QButtonGroup,
+        QDialog,
         QFileDialog,
         QFrame,
         QGridLayout,
@@ -35,13 +48,17 @@ try:
         QVBoxLayout,
         QWidget,
     )
+    from PySide6.QtSvg import QSvgRenderer
 except ImportError:
-    applescript = (
-        'display dialog "缺少界面依赖 PySide6_Essentials。'
-        '\\n\\n请先运行：python3 -m pip install --user PySide6_Essentials" '
-        'buttons {"知道了"} default button "知道了" with title "定格截图"'
-    )
-    subprocess.run(["osascript", "-e", applescript], check=False)
+    message = "缺少界面依赖 PySide6_Essentials。\n\n请先运行：python -m pip install PySide6_Essentials"
+    if platform.system() == "Darwin":
+        applescript = (
+            f'display dialog "{message}" '
+            'buttons {"知道了"} default button "知道了" with title "定格截图"'
+        )
+        subprocess.run(["osascript", "-e", applescript], check=False)
+    else:
+        print(message, file=sys.stderr)
     raise SystemExit("Missing PySide6_Essentials")
 
 
@@ -50,6 +67,11 @@ SETTINGS_APPLICATION = "TimedScreenshotTool"
 SETTINGS_LAYOUT_VERSION = 7
 APP_DISPLAY_NAME = "定格截图"
 APP_VERSION = "1.0"
+APP_DIR = Path(__file__).resolve().parent
+LOGO_PATH = APP_DIR / "assets" / "定格截图logo.png"
+GITHUB_URL = "https://github.com/1254455745/Dingge-Screenshot"
+AUTHOR_NAME = "zhenan"
+MAX_CAPTURE_IMAGES_PER_RUN = 10000
 
 DEFAULT_WINDOW_WIDTH = 1030
 DEFAULT_WINDOW_HEIGHT = 760
@@ -67,6 +89,72 @@ RULE_BUTTON_HEIGHT = 42
 INTERVAL_CONTROL_WIDTH = 130
 UNIT_BUTTON_WIDTH = 68
 
+CAPTURE_TARGET_FULLSCREEN = 0
+CAPTURE_TARGET_CUSTOM = 1
+CAPTURE_TARGET_BROWSER = 2
+
+BROWSER_APPS = (
+    ("Google Chrome", "Chrome"),
+    ("Safari", "Safari"),
+    ("Microsoft Edge", "Edge"),
+    ("Brave Browser", "Brave"),
+    ("Arc", "Arc"),
+)
+
+WINDOWS_BROWSER_TAB_SAFETY_LIMIT = 80
+WINDOWS_BROWSER_PAGE_DELAY_SECONDS = 0.45
+WINDOWS_BROWSER_EXECUTABLES = {
+    "chrome.exe": "Chrome",
+    "msedge.exe": "Edge",
+    "firefox.exe": "Firefox",
+    "brave.exe": "Brave",
+    "opera.exe": "Opera",
+    "opera_gx.exe": "OperaGX",
+}
+
+
+def logo_pixmap(size: int) -> QPixmap:
+    if not LOGO_PATH.exists():
+        return QPixmap()
+    return QPixmap(str(LOGO_PATH)).scaled(
+        size,
+        size,
+        Qt.KeepAspectRatio,
+        Qt.SmoothTransformation,
+    )
+
+
+def app_icon_pixmap(size: int) -> QPixmap:
+    base = QPixmap(size, size)
+    base.fill(QColor(0, 0, 0, 0))
+
+    logo = logo_pixmap(round(size * 0.72))
+    if logo.isNull():
+        return logo
+
+    painter = QPainter(base)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    x = (size - logo.width()) // 2
+    y = (size - logo.height()) // 2
+    painter.drawPixmap(x, y, logo)
+    painter.end()
+    return base
+
+
+def github_icon_pixmap(size: int) -> QPixmap:
+    icon = QPixmap(size, size)
+    icon.fill(QColor(0, 0, 0, 0))
+    svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+      <path fill="#1d1d1f" d="M12 .297C5.37.297 0 5.67 0 12.297c0 5.303 3.438 9.8 8.207 11.387.6.113.82-.258.82-.578 0-.285-.01-1.04-.016-2.04-3.338.727-4.043-1.608-4.043-1.608-.547-1.387-1.336-1.758-1.336-1.758-1.09-.746.083-.73.083-.73 1.205.086 1.84 1.238 1.84 1.238 1.07 1.835 2.808 1.305 3.492.997.108-.775.418-1.305.762-1.605-2.665-.303-5.466-1.333-5.466-5.93 0-1.31.467-2.38 1.235-3.22-.124-.303-.535-1.523.117-3.176 0 0 1.008-.322 3.3 1.23a11.48 11.48 0 0 1 3.005-.404c1.02.005 2.047.138 3.006.404 2.29-1.552 3.296-1.23 3.296-1.23.654 1.653.243 2.873.12 3.176.77.84 1.233 1.91 1.233 3.22 0 4.61-2.805 5.624-5.477 5.92.43.37.814 1.103.814 2.222 0 1.605-.015 2.898-.015 3.293 0 .322.216.697.825.58C20.565 22.092 24 17.597 24 12.297c0-6.627-5.373-12-12-12"/>
+    </svg>
+    """
+    renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+    painter = QPainter(icon)
+    renderer.render(painter)
+    painter.end()
+    return icon
+
 
 @dataclass
 class CaptureRegion:
@@ -74,6 +162,16 @@ class CaptureRegion:
     y: int
     width: int
     height: int
+
+
+@dataclass
+class BrowserTab:
+    app_name: str
+    display_name: str
+    window_index: int
+    tab_index: int
+    title: str
+    url: str
 
 
 class SelectionOverlay(QWidget):
@@ -90,6 +188,7 @@ class SelectionOverlay(QWidget):
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setAttribute(Qt.WA_TranslucentBackground)
         self.setMouseTracking(True)
         self.setCursor(QCursor(Qt.CrossCursor))
         self.setGeometry(screen.geometry())
@@ -136,15 +235,20 @@ class SelectionOverlay(QWidget):
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        self.draw_background(painter)
         painter.fillRect(self.rect(), QColor(8, 12, 20, 118))
 
         rect = QRect(self.origin, self.current).normalized()
         if self.dragging and not rect.isNull():
-            painter.save()
-            painter.setClipRect(rect)
-            self.draw_background(painter)
-            painter.restore()
+            if self.background.isNull():
+                painter.save()
+                painter.setCompositionMode(QPainter.CompositionMode_Clear)
+                painter.fillRect(rect, QColor(0, 0, 0, 0))
+                painter.restore()
+            else:
+                painter.save()
+                painter.setClipRect(rect)
+                self.draw_background(painter)
+                painter.restore()
 
             painter.setPen(QPen(QColor("#0A84FF"), 2))
             painter.setBrush(Qt.NoBrush)
@@ -174,6 +278,53 @@ class SelectionOverlay(QWidget):
             painter.fillRect(self.rect(), QColor("#1d1d1f"))
             return
         painter.drawPixmap(self.rect(), self.background)
+
+
+class RegionPreviewOverlay(QWidget):
+    def __init__(self, screen, region: CaptureRegion):
+        super().__init__(None)
+        self.screen = screen
+        self.region = region
+        self.preview_rect = self.region_to_overlay_rect(region)
+
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setCursor(QCursor(Qt.PointingHandCursor))
+        self.setGeometry(screen.geometry())
+
+    def region_to_overlay_rect(self, region: CaptureRegion) -> QRect:
+        screen_geo = self.screen.geometry()
+        ratio = self.screen.devicePixelRatio()
+        return QRect(
+            round(region.x / ratio - screen_geo.x()),
+            round(region.y / ratio - screen_geo.y()),
+            round(region.width / ratio),
+            round(region.height / ratio),
+        )
+
+    def mousePressEvent(self, _event):
+        self.close()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.close()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.preview_rect.normalized()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(10, 132, 255, 26))
+        painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 8, 8)
+
+        pen = QPen(QColor("#0A84FF"), 2)
+        pen.setStyle(Qt.DashLine)
+        pen.setDashPattern([6, 4])
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect.adjusted(1, 1, -2, -2), 8, 8)
 
 
 class StatCard(QFrame):
@@ -238,6 +389,8 @@ class ScreenshotWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_DISPLAY_NAME)
+        if LOGO_PATH.exists():
+            self.setWindowIcon(QIcon(app_icon_pixmap(256)))
         self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
         self.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
 
@@ -247,9 +400,11 @@ class ScreenshotWindow(QMainWindow):
         self.capture_count = 0
         self.running = False
         self.overlay: Optional[SelectionOverlay] = None
+        self.preview_overlay: Optional[RegionPreviewOverlay] = None
         self.next_capture_at: Optional[datetime] = None
         self.restore_geometry: Optional[QRect] = None
         self.restore_window_state = None
+        self.capture_target = CAPTURE_TARGET_FULLSCREEN
         self.region_customized = False
         self.region = self.default_region()
         self.custom_region: Optional[CaptureRegion] = None
@@ -292,11 +447,21 @@ class ScreenshotWindow(QMainWindow):
         root.setSpacing(18)
 
         header = QHBoxLayout()
-        header.setSpacing(12)
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(10)
+
+        logo_label = QLabel()
+        logo_label.setObjectName("HeaderLogo")
+        logo_label.setFixedSize(30, 30)
+        logo_label.setPixmap(logo_pixmap(30))
+        logo_label.setAlignment(Qt.AlignCenter)
+        header.addWidget(logo_label, 0, Qt.AlignVCenter)
 
         title = QLabel(APP_DISPLAY_NAME)
         title.setObjectName("WindowTitle")
-        header.addWidget(title)
+        title.setFixedHeight(34)
+        title.setAlignment(Qt.AlignVCenter)
+        header.addWidget(title, 0, Qt.AlignVCenter)
         header.addStretch(1)
 
         self.about_button = QPushButton("i")
@@ -363,11 +528,16 @@ class ScreenshotWindow(QMainWindow):
         self.path_value.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         choose_btn = self.make_button("选择", "secondary")
-        choose_btn.setFixedWidth(86)
+        choose_btn.setFixedSize(64, 42)
         choose_btn.clicked.connect(self.choose_directory)
+
+        open_btn = self.make_button("打开", "secondary")
+        open_btn.setFixedSize(64, 42)
+        open_btn.clicked.connect(self.open_save_directory)
 
         layout.addWidget(self.path_value, 1, 0)
         layout.addWidget(choose_btn, 1, 1)
+        layout.addWidget(open_btn, 1, 2)
         layout.setColumnStretch(0, 1)
         return layout
 
@@ -524,20 +694,11 @@ class ScreenshotWindow(QMainWindow):
 
         add_row = QHBoxLayout()
         add_row.setSpacing(10)
-        self.daily_time = QTimeEdit()
-        self.daily_time.setDisplayFormat("HH:mm")
-        self.daily_time.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        self.daily_time.setFixedWidth(130)
-        self.daily_time.setFixedHeight(42)
-        self.daily_time.setTime(datetime.now().replace(second=0, microsecond=0).time())
-        self.daily_time.lineEdit().returnPressed.connect(
-            lambda: self.add_time(self.daily_time.time().toString("HH:mm"))
-        )
         add_btn = self.make_button("添加时间点", "secondary")
         add_btn.setFixedWidth(120)
         add_btn.setFixedHeight(42)
         add_btn.clicked.connect(lambda: self.add_time(self.daily_time.time().toString("HH:mm")))
-        add_row.addWidget(self.daily_time)
+        add_row.addWidget(self.build_daily_time_control())
         add_row.addWidget(add_btn)
         add_row.addStretch(1)
         layout.addLayout(add_row)
@@ -583,11 +744,53 @@ class ScreenshotWindow(QMainWindow):
         layout.addWidget(self.time_box, 1)
         return page
 
+    def build_daily_time_control(self):
+        control = QFrame()
+        control.setObjectName("TimeInputControl")
+        control.setFixedSize(136, 42)
+
+        layout = QHBoxLayout(control)
+        layout.setContentsMargins(12, 0, 6, 0)
+        layout.setSpacing(6)
+
+        self.daily_time = QTimeEdit()
+        self.daily_time.setObjectName("TimeInputEdit")
+        self.daily_time.setDisplayFormat("HH:mm")
+        self.daily_time.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.daily_time.setFixedHeight(40)
+        self.daily_time.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.daily_time.setTime(datetime.now().replace(second=0, microsecond=0).time())
+        self.daily_time.lineEdit().returnPressed.connect(
+            lambda: self.add_time(self.daily_time.time().toString("HH:mm"))
+        )
+
+        stepper = QFrame()
+        stepper.setObjectName("TimeInputStepper")
+        stepper.setFixedSize(24, 34)
+        stepper_layout = QVBoxLayout(stepper)
+        stepper_layout.setContentsMargins(0, 0, 0, 0)
+        stepper_layout.setSpacing(2)
+
+        for text, tip, minutes in (
+            ("▲", "增加 1 分钟", 1),
+            ("▼", "减少 1 分钟", -1),
+        ):
+            button = QPushButton(text)
+            button.setObjectName("TimeInputStepButton")
+            button.setFixedSize(24, 16)
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _checked=False, value=minutes: self.step_daily_time(value))
+            stepper_layout.addWidget(button)
+
+        layout.addWidget(self.daily_time, 1)
+        layout.addWidget(stepper)
+        return control
+
     def build_region_section(self):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        region_label = self.make_label("截图区域")
+        region_label = self.make_label("截图选项")
         region_label.setFixedHeight(SECTION_LABEL_HEIGHT)
         region_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         layout.addWidget(region_label)
@@ -600,7 +803,12 @@ class ScreenshotWindow(QMainWindow):
 
         self.fullscreen_region_button = QPushButton("全屏截图")
         self.custom_region_button = QPushButton("选取区域")
-        for button in (self.fullscreen_region_button, self.custom_region_button):
+        self.browser_pages_button = QPushButton("浏览器页面")
+        for button in (
+            self.fullscreen_region_button,
+            self.custom_region_button,
+            self.browser_pages_button,
+        ):
             button.setCheckable(True)
             button.setObjectName("SegmentButton")
             segment_layout.addWidget(button)
@@ -608,10 +816,12 @@ class ScreenshotWindow(QMainWindow):
         self.fullscreen_region_button.setChecked(True)
         self.region_group = QButtonGroup(self)
         self.region_group.setExclusive(True)
-        self.region_group.addButton(self.fullscreen_region_button, 0)
-        self.region_group.addButton(self.custom_region_button, 1)
+        self.region_group.addButton(self.fullscreen_region_button, CAPTURE_TARGET_FULLSCREEN)
+        self.region_group.addButton(self.custom_region_button, CAPTURE_TARGET_CUSTOM)
+        self.region_group.addButton(self.browser_pages_button, CAPTURE_TARGET_BROWSER)
         self.fullscreen_region_button.clicked.connect(self.use_fullscreen_region)
         self.custom_region_button.clicked.connect(self.use_custom_region)
+        self.browser_pages_button.clicked.connect(self.use_browser_pages)
         layout.addWidget(segment)
 
         region_value_row = QFrame()
@@ -626,6 +836,12 @@ class ScreenshotWindow(QMainWindow):
         self.region_value.setWordWrap(False)
         self.region_value.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         region_value_layout.addWidget(self.region_value, 1)
+
+        self.preview_region_button = QPushButton("预览")
+        self.preview_region_button.setObjectName("RegionPreviewButton")
+        self.preview_region_button.setFixedSize(82, 42)
+        self.preview_region_button.clicked.connect(self.preview_region)
+        region_value_layout.addWidget(self.preview_region_button)
 
         self.reselect_region_button = QPushButton("重新选取")
         self.reselect_region_button.setObjectName("RegionReselectButton")
@@ -651,8 +867,13 @@ class ScreenshotWindow(QMainWindow):
                 background: transparent;
             }
             QLabel#WindowTitle {
-                font-size: 28px;
+                font-family: "Songti SC", "STSong", "SimSun", serif;
+                font-size: 26px;
                 font-weight: 700;
+            }
+            QLabel#HeaderLogo {
+                background: transparent;
+                border: none;
             }
             QPushButton#AboutButton {
                 background: white;
@@ -727,6 +948,7 @@ class ScreenshotWindow(QMainWindow):
                 background: transparent;
                 border: none;
             }
+            QPushButton#RegionPreviewButton,
             QPushButton#RegionReselectButton {
                 background: #f1f1f4;
                 border: 1px solid #ddddE3;
@@ -735,9 +957,11 @@ class ScreenshotWindow(QMainWindow):
                 font-weight: 700;
                 padding: 0 8px;
             }
+            QPushButton#RegionPreviewButton:hover,
             QPushButton#RegionReselectButton:hover {
                 background: #eaeaee;
             }
+            QPushButton#RegionPreviewButton:disabled,
             QPushButton#RegionReselectButton:disabled {
                 background: #e9e9ee;
                 color: #b0b0b5;
@@ -756,6 +980,27 @@ class ScreenshotWindow(QMainWindow):
                 color: #1d1d1f;
                 padding: 10px 12px;
                 min-height: 22px;
+            }
+            QFrame#TimeInputControl {
+                background: #f8f8fa;
+                border: 1px solid #e2e2e7;
+                border-radius: 10px;
+            }
+            QFrame#TimeInputControl:hover {
+                border-color: #d2d2da;
+                background: #fbfbfc;
+            }
+            QTimeEdit#TimeInputEdit {
+                background: transparent;
+                border: none;
+                border-radius: 0;
+                color: #1d1d1f;
+                padding: 0;
+                min-height: 40px;
+            }
+            QFrame#TimeInputStepper {
+                background: transparent;
+                border: none;
             }
             QPushButton {
                 border: none;
@@ -791,6 +1036,26 @@ class ScreenshotWindow(QMainWindow):
                 background: #f4f4f6;
                 border: 1px solid #e8e8ec;
                 color: #b0b0b5;
+            }
+            QPushButton#TimeInputStepButton {
+                background: #e9e9ef;
+                border: none;
+                border-radius: 5px;
+                color: #55555c;
+                font-size: 9px;
+                font-weight: 700;
+                max-height: 16px;
+                max-width: 24px;
+                min-height: 16px;
+                min-width: 24px;
+                padding: 0;
+            }
+            QPushButton#TimeInputStepButton:hover {
+                background: #dedee6;
+                color: #1d1d1f;
+            }
+            QPushButton#TimeInputStepButton:pressed {
+                background: #d1d1da;
             }
             QFrame#ControlGroup {
                 background: #fbfbfc;
@@ -921,17 +1186,187 @@ class ScreenshotWindow(QMainWindow):
         return button
 
     def show_about(self):
-        QMessageBox.information(
-            self,
-            f"关于 {APP_DISPLAY_NAME}",
-            (
-                f"{APP_DISPLAY_NAME}\n"
-                f"版本 {APP_VERSION}\n\n"
-                "一个轻量的定时截图小工具。\n"
-                "支持间隔截图、分钟点截图、指定时间截图，以及全屏/选区截图。\n"
-                "关闭后会自动保留上次的设置。"
-            ),
+        dialog = QDialog(self)
+        dialog.setObjectName("AboutDialog")
+        dialog.setWindowTitle(f"关于 {APP_DISPLAY_NAME}")
+        dialog.setModal(True)
+        dialog.setFixedWidth(420)
+        if LOGO_PATH.exists():
+            dialog.setWindowIcon(QIcon(app_icon_pixmap(256)))
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(30, 26, 30, 24)
+        layout.setSpacing(14)
+
+        logo_label = QLabel()
+        logo_label.setObjectName("AboutLogo")
+        logo_label.setFixedSize(88, 88)
+        logo_label.setPixmap(logo_pixmap(88))
+        logo_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(logo_label, 0, Qt.AlignHCenter)
+
+        title_label = QLabel(APP_DISPLAY_NAME)
+        title_label.setObjectName("AboutTitle")
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+
+        version_label = QLabel(f"版本 {APP_VERSION}")
+        version_label.setObjectName("AboutVersion")
+        version_label.setAlignment(Qt.AlignCenter)
+        version_label.setFixedSize(76, 24)
+        layout.addWidget(version_label, 0, Qt.AlignHCenter)
+
+        author_label = QLabel(f"作者：{AUTHOR_NAME}")
+        author_label.setObjectName("AboutAuthor")
+        author_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(author_label)
+
+        body_card = QFrame()
+        body_card.setObjectName("AboutBodyCard")
+        body_layout = QVBoxLayout(body_card)
+        body_layout.setContentsMargins(16, 14, 16, 14)
+        body_layout.setSpacing(8)
+
+        for text in (
+            "轻量的定时截图小工具，用来按规则自动保存屏幕画面。",
+            "支持间隔、分钟点和指定时间截图，也支持全屏和自定义区域。",
+            f"单次运行最多保存 {MAX_CAPTURE_IMAGES_PER_RUN:,} 张截图，达到上限后会自动停止。",
+            "macOS 首次控制浏览器时，需要在系统弹窗中允许本软件控制对应浏览器。",
+            "关闭后会自动保留上次的设置。",
+        ):
+            body_line = QLabel(text)
+            body_line.setObjectName("AboutBodyText")
+            body_line.setWordWrap(True)
+            body_layout.addWidget(body_line)
+        layout.addWidget(body_card)
+
+        github_button = QPushButton()
+        github_button.setObjectName("AboutGithubButton")
+        github_button.setFixedHeight(40)
+        github_button.setCursor(QCursor(Qt.PointingHandCursor))
+        github_button.clicked.connect(self.open_github)
+
+        github_button_layout = QHBoxLayout(github_button)
+        github_button_layout.setContentsMargins(0, 0, 0, 0)
+        github_button_layout.setSpacing(7)
+        github_button_layout.setAlignment(Qt.AlignCenter)
+
+        github_icon = QLabel()
+        github_icon.setObjectName("AboutGithubIcon")
+        github_icon.setFixedSize(18, 18)
+        github_icon.setPixmap(github_icon_pixmap(18))
+        github_icon.setAlignment(Qt.AlignCenter)
+        github_icon.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        github_text = QLabel("GitHub 项目主页")
+        github_text.setObjectName("AboutGithubText")
+        github_text.setAlignment(Qt.AlignCenter)
+        github_text.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+        github_button_layout.addWidget(github_icon)
+        github_button_layout.addWidget(github_text)
+        layout.addWidget(github_button)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 4, 0, 0)
+        button_row.addStretch(1)
+        ok_button = QPushButton("知道了")
+        ok_button.setObjectName("AboutOkButton")
+        ok_button.setFixedSize(96, 36)
+        ok_button.clicked.connect(dialog.accept)
+        button_row.addWidget(ok_button)
+        layout.addLayout(button_row)
+
+        dialog.setStyleSheet(
+            """
+            QDialog#AboutDialog {
+                background: #f5f5f7;
+                color: #1d1d1f;
+                font-family: "PingFang SC", "SF Pro Text", sans-serif;
+                font-size: 14px;
+            }
+            QLabel#AboutLogo {
+                background: transparent;
+                border: none;
+            }
+            QLabel#AboutTitle {
+                color: #1d1d1f;
+                font-size: 22px;
+                font-weight: 700;
+            }
+            QLabel#AboutVersion {
+                background: #eaeaef;
+                border-radius: 12px;
+                color: #6e6e73;
+                font-size: 12px;
+                font-weight: 600;
+                padding: 0;
+            }
+            QLabel#AboutAuthor {
+                color: #6e6e73;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QFrame#AboutBodyCard {
+                background: white;
+                border: 1px solid #e4e4e8;
+                border-radius: 12px;
+            }
+            QLabel#AboutBodyText {
+                background: transparent;
+                border: none;
+                color: #36363a;
+                font-size: 13px;
+                padding: 0;
+            }
+            QPushButton#AboutGithubButton {
+                background: white;
+                border: 1px solid #e2e2e7;
+                border-radius: 10px;
+                min-height: 38px;
+                padding: 0;
+            }
+            QPushButton#AboutGithubButton:hover {
+                background: #fbfbfc;
+                border-color: #d2d2da;
+            }
+            QPushButton#AboutGithubButton:pressed {
+                background: #eeeeF3;
+            }
+            QLabel#AboutGithubIcon {
+                background: transparent;
+                border: none;
+            }
+            QLabel#AboutGithubText {
+                background: transparent;
+                border: none;
+                color: #1d1d1f;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 0;
+            }
+            QPushButton#AboutOkButton {
+                background: #0A84FF;
+                border: none;
+                border-radius: 10px;
+                color: white;
+                font-weight: 700;
+                min-height: 36px;
+                min-width: 96px;
+                padding: 0;
+            }
+            QPushButton#AboutOkButton:hover {
+                background: #0070dd;
+            }
+            QPushButton#AboutOkButton:pressed {
+                background: #0068cc;
+            }
+            """
         )
+        dialog.exec()
+
+    def open_github(self):
+        QDesktopServices.openUrl(QUrl(GITHUB_URL))
 
     def current_time_text(self) -> str:
         return datetime.now().replace(second=0, microsecond=0).strftime("%H:%M")
@@ -1038,7 +1473,23 @@ class ScreenshotWindow(QMainWindow):
         if self.custom_region is None and active_custom:
             self.custom_region = saved_region
 
-        self.region_customized = active_custom and self.custom_region is not None
+        saved_capture_target = self.setting_int(
+            "region/capture_target",
+            CAPTURE_TARGET_CUSTOM if active_custom else CAPTURE_TARGET_FULLSCREEN,
+        )
+        if saved_capture_target not in (
+            CAPTURE_TARGET_FULLSCREEN,
+            CAPTURE_TARGET_CUSTOM,
+            CAPTURE_TARGET_BROWSER,
+        ):
+            saved_capture_target = CAPTURE_TARGET_FULLSCREEN
+
+        self.capture_target = saved_capture_target
+        self.region_customized = (
+            self.capture_target == CAPTURE_TARGET_CUSTOM and self.custom_region is not None
+        )
+        if self.capture_target == CAPTURE_TARGET_CUSTOM and self.custom_region is None:
+            self.capture_target = CAPTURE_TARGET_FULLSCREEN
         self.region = self.custom_region if self.region_customized else self.default_region()
         self.sync_region_buttons()
 
@@ -1061,6 +1512,7 @@ class ScreenshotWindow(QMainWindow):
         self.settings.setValue("interval/unit_seconds", unit_seconds)
         self.settings.setValue("minute/mark", self.mark_minutes())
         self.settings.setValue("daily/times", "|".join(self.daily_times))
+        self.settings.setValue("region/capture_target", self.capture_target)
         self.settings.setValue("region/customized", self.region_customized)
         self.settings.setValue("region/x", self.region.x)
         self.settings.setValue("region/y", self.region.y)
@@ -1164,7 +1616,12 @@ class ScreenshotWindow(QMainWindow):
         self.path_value.setText(str(self.save_dir))
 
     def refresh_region(self):
-        if self.region_customized:
+        if self.capture_target == CAPTURE_TARGET_BROWSER:
+            if self.system_name == "Windows":
+                text = "逐个浏览器窗口截全屏；整批完成后再计下一次"
+            else:
+                text = "依次截取浏览器标签页；整批完成后再计下一次"
+        elif self.region_customized:
             text = f"X {self.region.x}, Y {self.region.y}, {self.region.width} x {self.region.height}"
         else:
             text = "当前使用全屏截图"
@@ -1201,6 +1658,10 @@ class ScreenshotWindow(QMainWindow):
             self.refresh_path()
             self.refresh_idle_note()
 
+    def open_save_directory(self):
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.save_dir)))
+
     def set_mode(self, index: int):
         self.interval_button.setChecked(index == 0)
         self.minute_button.setChecked(index == 1)
@@ -1232,6 +1693,9 @@ class ScreenshotWindow(QMainWindow):
     def mark_minutes(self) -> int:
         button = self.minute_group.checkedButton()
         return int(button.property("minutes")) if button else 5
+
+    def step_daily_time(self, minutes: int):
+        self.daily_time.setTime(self.daily_time.time().addSecs(minutes * 60))
 
     def refresh_interval_preview(self):
         button = self.unit_group.checkedButton()
@@ -1312,18 +1776,27 @@ class ScreenshotWindow(QMainWindow):
         self.current_time_viewport_width = viewport_width
 
     def use_fullscreen_region(self):
+        self.capture_target = CAPTURE_TARGET_FULLSCREEN
         self.region = self.default_region()
         self.region_customized = False
         self.sync_region_buttons()
         self.refresh_region()
 
     def use_custom_region(self):
+        self.capture_target = CAPTURE_TARGET_CUSTOM
         if self.custom_region is None:
             self.select_region()
             return
 
         self.region = self.custom_region
         self.region_customized = True
+        self.sync_region_buttons()
+        self.refresh_region()
+
+    def use_browser_pages(self):
+        self.capture_target = CAPTURE_TARGET_BROWSER
+        self.region_customized = False
+        self.region = self.default_region()
         self.sync_region_buttons()
         self.refresh_region()
 
@@ -1342,14 +1815,7 @@ class ScreenshotWindow(QMainWindow):
         QTimer.singleShot(120, lambda selected_screen=screen: self.open_selection_overlay(selected_screen))
 
     def open_selection_overlay(self, screen):
-        background = screen.grabWindow(0)
-        if background.isNull():
-            self.restore_main_window()
-            self.sync_region_buttons()
-            QMessageBox.warning(self, "无法选择", "没有成功读取当前屏幕画面，请检查系统截图权限。")
-            return
-
-        self.overlay = SelectionOverlay(screen, background)
+        self.overlay = SelectionOverlay(screen, QPixmap())
         self.overlay.selection_made.connect(self.on_region_selected)
         self.overlay.selection_cancelled.connect(self.on_region_cancelled)
         self.overlay.show()
@@ -1357,9 +1823,127 @@ class ScreenshotWindow(QMainWindow):
         self.overlay.activateWindow()
         self.overlay.setFocus()
 
+    def screen_capture_region(self, screen) -> CaptureRegion:
+        geometry = screen.geometry()
+        ratio = screen.devicePixelRatio()
+        return CaptureRegion(
+            x=round(geometry.x() * ratio),
+            y=round(geometry.y() * ratio),
+            width=round(geometry.width() * ratio),
+            height=round(geometry.height() * ratio),
+        )
+
+    def capture_screen_pixmap(self, screen) -> QPixmap:
+        if self.system_name == "Darwin":
+            pixmap = self.capture_full_screen_pixmap()
+            if not pixmap.isNull():
+                return pixmap
+
+        try:
+            pixmap = self.capture_region_pixmap(self.screen_capture_region(screen))
+            if not pixmap.isNull():
+                return pixmap
+        except Exception:  # noqa: BLE001
+            pass
+
+        return screen.grabWindow(0)
+
+    def capture_full_screen_pixmap(self) -> QPixmap:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+            temp_path = Path(temp_file.name)
+
+        try:
+            subprocess.run(
+                ["screencapture", "-x", str(temp_path)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return QPixmap(str(temp_path))
+        except Exception:  # noqa: BLE001
+            return QPixmap()
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def capture_region_with_screencapture(self, region: CaptureRegion, filepath: Path):
+        region_text = f"{region.x},{region.y},{region.width},{region.height}"
+        try:
+            subprocess.run(
+                ["screencapture", "-x", f"-R{region_text}", str(filepath)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                "系统没有成功读取当前选区。请确认已经给 PyCharm、Python 或定格截图开启“屏幕录制”权限。"
+            ) from exc
+
+    def capture_region_pixmap(self, region: CaptureRegion) -> QPixmap:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+            temp_path = Path(temp_file.name)
+
+        try:
+            if self.system_name == "Darwin":
+                try:
+                    self.capture_region_with_screencapture(region, temp_path)
+                except RuntimeError:
+                    full_screen = self.capture_full_screen_pixmap()
+                    if full_screen.isNull():
+                        raise
+                    return full_screen.copy(region.x, region.y, region.width, region.height)
+            else:
+                if ImageGrab is None:
+                    raise RuntimeError("当前系统缺少 Pillow，无法截图。")
+                image = ImageGrab.grab(
+                    bbox=(
+                        region.x,
+                        region.y,
+                        region.x + region.width,
+                        region.y + region.height,
+                    )
+                )
+                image.save(temp_path)
+            return QPixmap(str(temp_path))
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def screen_for_region(self, region: CaptureRegion):
+        center = QPoint(region.x + region.width // 2, region.y + region.height // 2)
+        for screen in QApplication.screens():
+            screen_region = self.screen_capture_region(screen)
+            screen_rect = QRect(
+                screen_region.x,
+                screen_region.y,
+                screen_region.width,
+                screen_region.height,
+            )
+            if screen_rect.contains(center):
+                return screen
+        return QApplication.primaryScreen()
+
+    def preview_region(self):
+        if not self.region_customized:
+            QMessageBox.information(self, "暂无选区", "当前使用全屏截图，请先选取截图区域。")
+            return
+
+        screen = self.screen_for_region(self.region)
+        if screen is None:
+            QMessageBox.warning(self, "无法预览", "没有检测到当前选区所在的屏幕。")
+            return
+
+        if self.preview_overlay is not None:
+            self.preview_overlay.close()
+        self.preview_overlay = RegionPreviewOverlay(screen, self.region)
+        self.preview_overlay.destroyed.connect(lambda: setattr(self, "preview_overlay", None))
+        self.preview_overlay.show()
+        self.preview_overlay.raise_()
+        self.preview_overlay.activateWindow()
+
     def on_region_selected(self, region: CaptureRegion):
         self.custom_region = region
         self.region = region
+        self.capture_target = CAPTURE_TARGET_CUSTOM
         self.region_customized = True
         self.sync_region_buttons()
         self.refresh_region()
@@ -1370,9 +1954,13 @@ class ScreenshotWindow(QMainWindow):
         self.restore_main_window()
 
     def sync_region_buttons(self):
-        self.fullscreen_region_button.setChecked(not self.region_customized)
-        self.custom_region_button.setChecked(self.region_customized)
-        self.reselect_region_button.setVisible(self.region_customized)
+        self.fullscreen_region_button.setChecked(self.capture_target == CAPTURE_TARGET_FULLSCREEN)
+        self.custom_region_button.setChecked(self.capture_target == CAPTURE_TARGET_CUSTOM)
+        self.browser_pages_button.setChecked(self.capture_target == CAPTURE_TARGET_BROWSER)
+        is_custom_target = self.capture_target == CAPTURE_TARGET_CUSTOM
+        self.preview_region_button.setVisible(is_custom_target)
+        self.preview_region_button.setEnabled(self.custom_region is not None)
+        self.reselect_region_button.setVisible(is_custom_target)
         self.reselect_region_button.setEnabled(self.custom_region is not None)
 
     def restore_main_window(self):
@@ -1392,6 +1980,335 @@ class ScreenshotWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    def run_osascript(self, script: str) -> str:
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            message = (exc.stderr or exc.stdout or str(exc)).strip()
+            raise RuntimeError(message or "执行浏览器自动化脚本失败。") from exc
+        return result.stdout.strip()
+
+    def browser_tabs(self, strict_errors: bool = False) -> list[BrowserTab]:
+        tabs: list[BrowserTab] = []
+        errors: list[str] = []
+        for app_name, display_name in BROWSER_APPS:
+            try:
+                output = self.run_osascript(self.browser_tabs_script(app_name))
+            except RuntimeError as exc:
+                if strict_errors:
+                    errors.append(f"{display_name}: {exc}")
+                continue
+
+            for line in output.splitlines():
+                parts = line.split("\t", 3)
+                if len(parts) != 4:
+                    continue
+                window_index, tab_index, title, url = parts
+                try:
+                    tabs.append(
+                        BrowserTab(
+                            app_name=app_name,
+                            display_name=display_name,
+                            window_index=int(window_index),
+                            tab_index=int(tab_index),
+                            title=title.strip() or "未命名页面",
+                            url=url.strip(),
+                        )
+                    )
+                except ValueError:
+                    continue
+
+        if strict_errors and errors:
+            detail = "\n".join(errors[:4])
+            raise RuntimeError(
+                "macOS 还没有允许定格截图控制部分浏览器。\n\n"
+                "请在弹出的系统提示中选择“允许”，或到“系统设置 > 隐私与安全性 > 自动化”里手动开启。\n\n"
+                f"{detail}"
+            )
+        return tabs
+
+    def ensure_browser_capture_ready(self):
+        if self.system_name == "Darwin":
+            tabs = self.browser_tabs(strict_errors=True)
+            if not tabs:
+                raise RuntimeError("没有检测到已打开的浏览器标签页。请先打开浏览器页面。")
+            return
+
+        if self.system_name == "Windows":
+            if ImageGrab is None:
+                raise RuntimeError("当前系统缺少 Pillow，无法在 Windows 上截图。")
+            if not self.windows_browser_windows():
+                raise RuntimeError("没有检测到已打开的浏览器窗口。请先让浏览器保持打开状态。")
+
+    def browser_tabs_script(self, app_name: str) -> str:
+        return f'''
+        set output to ""
+        set delimiter to ASCII character 9
+        tell application "System Events"
+            if not (exists process "{app_name}") then return output
+        end tell
+        tell application "{app_name}"
+            set windowCount to count of windows
+            repeat with w from 1 to windowCount
+                set tabCount to count of tabs of window w
+                repeat with t from 1 to tabCount
+                    set tabTitle to ""
+                    set tabUrl to ""
+                    try
+                        set tabTitle to title of tab t of window w
+                    end try
+                    if tabTitle is "" then
+                        try
+                            set tabTitle to name of tab t of window w
+                        end try
+                    end if
+                    try
+                        set tabUrl to URL of tab t of window w
+                    end try
+                    set output to output & w & delimiter & t & delimiter & tabTitle & delimiter & tabUrl & linefeed
+                end repeat
+            end repeat
+        end tell
+        return output
+        '''
+
+    def activate_browser_tab(self, tab: BrowserTab):
+        if tab.app_name == "Safari":
+            script = f'''
+            tell application "{tab.app_name}"
+                activate
+                set index of window {tab.window_index} to 1
+                set current tab of window {tab.window_index} to tab {tab.tab_index} of window {tab.window_index}
+            end tell
+            '''
+        else:
+            script = f'''
+            tell application "{tab.app_name}"
+                activate
+                set index of window {tab.window_index} to 1
+                set active tab index of window {tab.window_index} to {tab.tab_index}
+            end tell
+            '''
+        self.run_osascript(script)
+        QApplication.processEvents()
+
+    def front_browser_window_region(self, app_name: str) -> CaptureRegion:
+        output = self.run_osascript(
+            f'''
+            tell application "{app_name}"
+                activate
+                set index of window 1 to 1
+                set windowBounds to bounds of window 1
+                return (item 1 of windowBounds as text) & "," & ¬
+                    (item 2 of windowBounds as text) & "," & ¬
+                    ((item 3 of windowBounds) - (item 1 of windowBounds) as text) & "," & ¬
+                    ((item 4 of windowBounds) - (item 2 of windowBounds) as text)
+            end tell
+            '''
+        )
+        x_text, y_text, width_text, height_text = output.split(",", 3)
+        x = float(x_text)
+        y = float(y_text)
+        width = float(width_text)
+        height = float(height_text)
+        screen = QApplication.screenAt(QPoint(round(x + width / 2), round(y + height / 2)))
+        ratio = screen.devicePixelRatio() if screen is not None else 1.0
+        return CaptureRegion(
+            x=round(x * ratio),
+            y=round(y * ratio),
+            width=round(width * ratio),
+            height=round(height * ratio),
+        )
+
+    def safe_filename_part(self, value: str, default: str) -> str:
+        cleaned = re.sub(r'[\\/:*?"<>|\s]+', "_", value.strip())
+        cleaned = cleaned.strip("._")
+        return (cleaned or default)[:60]
+
+    def save_browser_page_screenshots(self, timestamp: str, max_count: int) -> int:
+        if max_count <= 0:
+            return 0
+
+        if self.system_name == "Windows":
+            return self.save_windows_browser_page_screenshots(timestamp, max_count)
+        if self.system_name != "Darwin":
+            raise RuntimeError("浏览器页面截图目前只支持 macOS 和 Windows。")
+
+        tabs = self.browser_tabs(strict_errors=True)
+        if not tabs:
+            raise RuntimeError("没有检测到已打开的浏览器标签页。")
+
+        saved_count = 0
+        try:
+            for index, tab in enumerate(tabs, start=1):
+                if saved_count >= max_count:
+                    break
+
+                self.activate_browser_tab(tab)
+                QApplication.processEvents()
+                time.sleep(0.45)
+                QApplication.processEvents()
+
+                region = self.front_browser_window_region(tab.app_name)
+                browser_name = self.safe_filename_part(tab.display_name, "Browser")
+                title = self.safe_filename_part(tab.title, f"page_{index}")
+                filepath = self.save_dir / f"browser_{timestamp}_{index:03d}_{browser_name}_{title}.png"
+                self.capture_region_with_screencapture(region, filepath)
+                saved_count += 1
+        finally:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+        return saved_count
+
+    def windows_api(self):
+        try:
+            import ctypes
+            import ctypes.wintypes
+        except ImportError as exc:
+            raise RuntimeError("当前 Python 无法调用 Windows 自动化接口。") from exc
+        return ctypes
+
+    def windows_process_name(self, pid: int) -> str:
+        ctypes = self.windows_api()
+        kernel32 = ctypes.windll.kernel32
+        process_query_limited_information = 0x1000
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return ""
+        try:
+            buffer_size = ctypes.wintypes.DWORD(260)
+            buffer = ctypes.create_unicode_buffer(buffer_size.value)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(buffer_size)):
+                return Path(buffer.value).name.lower()
+            return ""
+        finally:
+            kernel32.CloseHandle(handle)
+
+    def windows_browser_windows(self) -> list[tuple[int, str, str]]:
+        ctypes = self.windows_api()
+        user32 = ctypes.windll.user32
+        windows: list[tuple[int, str, str]] = []
+
+        enum_windows_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+
+        def callback(hwnd, _lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            title_length = user32.GetWindowTextLengthW(hwnd)
+            if title_length <= 0:
+                return True
+
+            pid = ctypes.wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            process_name = self.windows_process_name(pid.value)
+            display_name = WINDOWS_BROWSER_EXECUTABLES.get(process_name)
+            if display_name is None:
+                return True
+
+            title = ctypes.create_unicode_buffer(title_length + 1)
+            user32.GetWindowTextW(hwnd, title, title_length + 1)
+            windows.append((int(hwnd), display_name, title.value))
+            return True
+
+        user32.EnumWindows(enum_windows_proc(callback), 0)
+        return windows
+
+    def activate_windows_window(self, hwnd: int):
+        ctypes = self.windows_api()
+        user32 = ctypes.windll.user32
+        sw_restore = 9
+        user32.ShowWindow(hwnd, sw_restore)
+        user32.SetForegroundWindow(hwnd)
+
+    def windows_window_title(self, hwnd: int) -> str:
+        ctypes = self.windows_api()
+        user32 = ctypes.windll.user32
+        title_length = user32.GetWindowTextLengthW(hwnd)
+        if title_length <= 0:
+            return ""
+        title = ctypes.create_unicode_buffer(title_length + 1)
+        user32.GetWindowTextW(hwnd, title, title_length + 1)
+        return title.value
+
+    def send_windows_ctrl_tab(self):
+        ctypes = self.windows_api()
+
+        user32 = ctypes.windll.user32
+        keyeventf_keyup = 0x0002
+        vk_control = 0x11
+        vk_tab = 0x09
+        user32.keybd_event(vk_control, 0, 0, 0)
+        user32.keybd_event(vk_tab, 0, 0, 0)
+        user32.keybd_event(vk_tab, 0, keyeventf_keyup, 0)
+        user32.keybd_event(vk_control, 0, keyeventf_keyup, 0)
+
+    def save_windows_browser_page_screenshots(self, timestamp: str, max_count: int) -> int:
+        if max_count <= 0:
+            return 0
+
+        if ImageGrab is None:
+            raise RuntimeError("当前系统缺少 Pillow，无法在 Windows 上截图。")
+
+        browser_windows = self.windows_browser_windows()
+        if not browser_windows:
+            raise RuntimeError("没有检测到已打开的浏览器窗口。请先让浏览器保持打开状态。")
+
+        self.hide()
+        QApplication.processEvents()
+        time.sleep(0.35)
+
+        saved_count = 0
+        try:
+            for window_index, (hwnd, browser_name, _title) in enumerate(browser_windows, start=1):
+                if saved_count >= max_count:
+                    break
+
+                self.activate_windows_window(hwnd)
+                time.sleep(WINDOWS_BROWSER_PAGE_DELAY_SECONDS)
+                first_title = self.windows_window_title(hwnd)
+                seen_titles: set[str] = set()
+
+                for _ in range(WINDOWS_BROWSER_TAB_SAFETY_LIMIT):
+                    if saved_count >= max_count:
+                        break
+
+                    current_title = self.windows_window_title(hwnd)
+                    if current_title in seen_titles:
+                        break
+
+                    seen_titles.add(current_title)
+                    title_part = self.safe_filename_part(current_title, f"tab_{len(seen_titles)}")
+                    filepath = (
+                        self.save_dir
+                        / f"browser_{timestamp}_{saved_count + 1:03d}_{browser_name}_w{window_index}_{title_part}.png"
+                    )
+                    image = ImageGrab.grab()
+                    image.save(filepath)
+                    saved_count += 1
+
+                    if saved_count >= max_count:
+                        break
+
+                    self.send_windows_ctrl_tab()
+                    time.sleep(WINDOWS_BROWSER_PAGE_DELAY_SECONDS)
+                    QApplication.processEvents()
+
+                    if self.windows_window_title(hwnd) == first_title and len(seen_titles) > 0:
+                        break
+        finally:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+        return saved_count
+
     def start_capture(self):
         if self.running:
             QMessageBox.information(self, "正在运行", "截图任务已经开始了。")
@@ -1400,6 +2317,19 @@ class ScreenshotWindow(QMainWindow):
         if self.mode_group.checkedId() == 2 and not self.daily_times:
             QMessageBox.warning(self, "缺少时间点", "请先添加至少一个截图时间点。")
             return
+
+        if self.capture_target == CAPTURE_TARGET_BROWSER:
+            try:
+                self.ensure_browser_capture_ready()
+            except Exception as exc:  # noqa: BLE001
+                self.status_card.set_value("未开始")
+                self.note_label.setText(f"浏览器截图未准备好：{exc}")
+                QMessageBox.warning(
+                    self,
+                    "浏览器截图未准备好",
+                    f"{exc}",
+                )
+                return
 
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.running = True
@@ -1473,7 +2403,7 @@ class ScreenshotWindow(QMainWindow):
         QApplication.processEvents()
 
         try:
-            self.save_screenshot()
+            saved_count = self.save_screenshot()
         except Exception as exc:  # noqa: BLE001
             self.running = False
             self.timer.stop()
@@ -1485,22 +2415,38 @@ class ScreenshotWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "截图失败",
-                "截图时出现错误。\n\n如果你是 macOS，请确认已经给启动器开启“屏幕录制”权限。",
+                f"截图时出现错误。\n\n{exc}",
             )
             return
 
-        self.capture_count += 1
+        self.capture_count += max(0, saved_count)
         self.count_card.set_value(str(self.capture_count))
+        if self.capture_count >= MAX_CAPTURE_IMAGES_PER_RUN:
+            self.running = False
+            self.timer.stop()
+            self.next_capture_at = None
+            self.status_card.set_value("已完成")
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.note_label.setText(f"已达到单次 {MAX_CAPTURE_IMAGES_PER_RUN:,} 张上限，截图已自动停止")
+            return
+
         self.schedule_next_capture()
 
     def save_screenshot(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        remaining_count = MAX_CAPTURE_IMAGES_PER_RUN - self.capture_count
+        if remaining_count <= 0:
+            return 0
+
+        if self.capture_target == CAPTURE_TARGET_BROWSER:
+            return self.save_browser_page_screenshots(timestamp, remaining_count)
+
         filepath = self.save_dir / f"screenshot_{timestamp}.png"
 
         if self.system_name == "Darwin":
-            region = f"{self.region.x},{self.region.y},{self.region.width},{self.region.height}"
-            subprocess.run(["screencapture", "-x", f"-R{region}", str(filepath)], check=True)
-            return
+            self.capture_region_with_screencapture(self.region, filepath)
+            return 1
 
         if ImageGrab is None:
             raise RuntimeError("当前系统缺少 Pillow，无法截图。")
@@ -1514,12 +2460,15 @@ class ScreenshotWindow(QMainWindow):
             )
         )
         image.save(filepath)
+        return 1
 
 
 def main():
     app = QApplication(sys.argv)
     app.setOrganizationName(SETTINGS_ORGANIZATION)
     app.setApplicationName(APP_DISPLAY_NAME)
+    if LOGO_PATH.exists():
+        app.setWindowIcon(QIcon(app_icon_pixmap(256)))
     window = ScreenshotWindow()
     window.show()
     sys.exit(app.exec())

@@ -2,3 +2,21 @@
 __pycache__/
 *.pyc
 screenshots/
+
+# Local Python environments
+.venv/
+venv/
+env/
+
+# IDE / editor state
+.idea/
+.vscode/
+
+# Build and packaging output
+build/
+dist/
+*.spec
+
+# Logs and temporary files
+*.log
+*.tmp
