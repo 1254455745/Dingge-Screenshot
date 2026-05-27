@@ -1,7 +1,6 @@
 from html import escape
 import platform
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -75,7 +74,6 @@ LOGO_PATH = APP_DIR / "assets" / "定格截图logo.png"
 GITHUB_URL = "https://github.com/1254455745/Dingge-Screenshot"
 AUTHOR_NAME = "zhenan"
 MAX_CAPTURE_IMAGES_PER_RUN = 10000
-OCR_LANGUAGES = ("chi_sim+eng", "eng")
 
 DEFAULT_WINDOW_WIDTH = 1030
 DEFAULT_WINDOW_HEIGHT = 760
@@ -186,8 +184,6 @@ class CaptureRecord:
     page_title: str = ""
     url: str = ""
     browser_name: str = ""
-    ocr_text: str = ""
-    ocr_status: str = ""
 
 
 class SelectionOverlay(QWidget):
@@ -2197,35 +2193,6 @@ class ScreenshotWindow(QMainWindow):
             return image_path.name
         return image_path.as_posix()
 
-    def ocr_image_text(self, image_path: Path) -> tuple[str, str]:
-        tesseract = shutil.which("tesseract")
-        if not tesseract:
-            return "", "OCR 未启用：未检测到 Tesseract"
-
-        last_error = ""
-        for language in OCR_LANGUAGES:
-            command = [tesseract, str(image_path), "stdout", "-l", language]
-            try:
-                result = subprocess.run(
-                    command,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=90,
-                )
-            except subprocess.TimeoutExpired:
-                return "", "OCR 超时"
-            except subprocess.CalledProcessError as exc:
-                last_error = (exc.stderr or exc.stdout or str(exc)).strip()
-                continue
-
-            text = result.stdout.strip()
-            if language == OCR_LANGUAGES[0]:
-                return text, "OCR 完成"
-            return text, "OCR 完成（英文模型）"
-
-        return "", f"OCR 失败：{last_error or '识别引擎没有返回结果'}"
-
     def queue_capture_report(self, timestamp: str, records: list[CaptureRecord]):
         if not records:
             return
@@ -2247,9 +2214,6 @@ class ScreenshotWindow(QMainWindow):
                     file.write(f"{datetime.now().isoformat(timespec='seconds')} {exc}\n")
 
     def write_capture_report(self, timestamp: str, records: list[CaptureRecord]):
-        for record in records:
-            record.ocr_text, record.ocr_status = self.ocr_image_text(record.filepath)
-
         report_dir = self.save_dir
         report_path = self.save_dir / f"capture_{timestamp}.html"
 
@@ -2333,9 +2297,15 @@ class ScreenshotWindow(QMainWindow):
       font-weight: 600;
     }}
     .canvas-wrap {{
+      position: relative;
       padding: 16px 18px;
       border-bottom: 1px solid var(--line);
       background: #fafafa;
+    }}
+    .image-stage {{
+      position: relative;
+      width: 100%;
+      overflow: hidden;
     }}
     canvas {{
       display: none;
@@ -2352,31 +2322,6 @@ class ScreenshotWindow(QMainWindow):
       border: 1px solid var(--line);
       border-radius: 8px;
       background: white;
-    }}
-    .ocr {{
-      padding: 16px 18px 18px;
-    }}
-    .ocr h2 {{
-      margin: 0 0 8px;
-      font-size: 16px;
-    }}
-    pre {{
-      white-space: pre-wrap;
-      word-break: break-word;
-      margin: 0;
-      padding: 12px;
-      min-height: 56px;
-      background: #f5f5f7;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      color: #2d2d31;
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-      font-size: 13px;
-    }}
-    .status {{
-      color: var(--muted);
-      font-size: 13px;
-      margin-bottom: 8px;
     }}
     @media (max-width: 720px) {{
       main {{ width: min(100% - 24px, 1180px); margin-top: 18px; }}
@@ -2426,7 +2371,6 @@ class ScreenshotWindow(QMainWindow):
         title = record.page_title or record.capture_type
         browser = record.browser_name or "-"
         url = record.url or "-"
-        ocr_text = record.ocr_text.strip() or "未识别到文字。"
         return f"""
     <section class="shot-card">
       <div class="meta">
@@ -2439,13 +2383,10 @@ class ScreenshotWindow(QMainWindow):
         <div><span class="label">截图文件</span><span class="value">{escape(record.filepath.name)}</span></div>
       </div>
       <div class="canvas-wrap">
-        <canvas data-src="{escape(image_src, quote=True)}"></canvas>
-        <img class="shot-image" src="{escape(image_src, quote=True)}" alt="截图 {index}">
-      </div>
-      <div class="ocr">
-        <h2>OCR 识别内容</h2>
-        <div class="status">{escape(record.ocr_status or "OCR 状态未知")}</div>
-        <pre>{escape(ocr_text)}</pre>
+        <div class="image-stage">
+          <canvas data-src="{escape(image_src, quote=True)}"></canvas>
+          <img class="shot-image" src="{escape(image_src, quote=True)}" alt="截图 {index}">
+        </div>
       </div>
     </section>
 """
