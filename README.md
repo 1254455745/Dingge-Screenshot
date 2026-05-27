@@ -34,14 +34,6 @@
 └── README.md
 ```
 
-说明：
-
-- `定格截图.py` 是主程序。
-- `assets/` 放图片等资源文件。
-- `启动定格截图.command` 是 macOS 双击启动脚本。
-- `定格截图.app` 是 macOS app 启动器。
-- `.venv/`、`.idea/`、`screenshots/` 等本地文件不会提交到 GitHub。
-
 ## 安装依赖
 
 建议先创建虚拟环境：
@@ -118,29 +110,3 @@ macOS 首次截图或控制浏览器时，可能会弹出权限提示。
 普通全屏截图和选区截图依赖 Pillow 的 `ImageGrab`。
 
 浏览器批量截图会受到窗口焦点、快捷键、多显示器、DPI 缩放等因素影响，建议在真实 Windows 设备上测试后再长时间使用。
-
-## Git 提交建议
-
-建议提交：
-
-- `定格截图.py`
-- `assets/`
-- `requirements.txt`
-- `README.md`
-- `启动定格截图.command`
-- `launcher.applescript`
-- `定格截图.app/`，如果你希望仓库里保留 macOS app 启动器
-
-不建议提交：
-
-- `.venv/`
-- `.idea/`
-- `__pycache__/`
-- `.DS_Store`
-- `screenshots/`
-
-提交信息示例：
-
-```text
-feat: improve screenshot app structure and documentation
-```
