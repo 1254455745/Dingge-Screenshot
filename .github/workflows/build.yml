@@ -5,6 +5,11 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
 
 jobs:
   macos:
@@ -41,3 +46,44 @@ jobs:
         with:
           name: dingge-screenshot-windows
           path: dist/定格截图-Windows.zip
+
+  release:
+    name: Publish release
+    needs:
+      - macos
+      - windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packaged apps
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## 定格截图
+
+          ### 功能
+          - 支持全屏截图、自定义区域截图
+          - 支持已打开浏览器页面批量截图
+          - 浏览器截图会自动生成 HTML 查看页面
+          - 支持定时间隔截图
+          - 支持保存目录选择和打开
+          - 支持 macOS 和 Windows
+
+          ### 下载
+          - macOS 用户下载 `定格截图-macOS.dmg` 或 `定格截图-macOS.zip`
+          - Windows 用户下载 `定格截图-Windows.zip`
+          EOF
+
+          mapfile -d '' files < <(find release-assets -type f -print0)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --title "定格截图 ${GITHUB_REF_NAME}" \
+              --notes-file release-notes.md
+          fi
