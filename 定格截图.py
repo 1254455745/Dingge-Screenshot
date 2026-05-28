@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import unquote
+from urllib.request import Request, urlopen
 
 try:
     from PIL import ImageGrab
@@ -68,7 +71,7 @@ SETTINGS_ORGANIZATION = "Anzhen"
 SETTINGS_APPLICATION = "TimedScreenshotTool"
 SETTINGS_LAYOUT_VERSION = 7
 APP_DISPLAY_NAME = "定格截图"
-APP_VERSION = "1.0"
+APP_VERSION = "1.0.0"
 
 
 def app_base_dir() -> Path:
@@ -88,6 +91,8 @@ def default_save_dir() -> Path:
 APP_DIR = app_base_dir()
 LOGO_PATH = APP_DIR / "assets" / "定格截图logo.png"
 GITHUB_URL = "https://github.com/1254455745/Dingge-Screenshot"
+GITHUB_RELEASES_URL = f"{GITHUB_URL}/releases"
+GITHUB_LATEST_RELEASE_URL = f"{GITHUB_RELEASES_URL}/latest"
 AUTHOR_NAME = "zhenan"
 MAX_CAPTURE_IMAGES_PER_RUN = 10000
 
@@ -172,6 +177,29 @@ def github_icon_pixmap(size: int) -> QPixmap:
     renderer.render(painter)
     painter.end()
     return icon
+
+
+def version_parts(version: str) -> list[int]:
+    normalized = version.strip().lstrip("vV")
+    normalized = re.split(r"[-+]", normalized, maxsplit=1)[0]
+    parts = []
+    for part in normalized.split("."):
+        match = re.match(r"\d+", part)
+        parts.append(int(match.group(0)) if match else 0)
+    return parts or [0]
+
+
+def compare_versions(left: str, right: str) -> int:
+    left_parts = version_parts(left)
+    right_parts = version_parts(right)
+    size = max(len(left_parts), len(right_parts))
+    left_parts.extend([0] * (size - len(left_parts)))
+    right_parts.extend([0] * (size - len(right_parts)))
+    if left_parts < right_parts:
+        return -1
+    if left_parts > right_parts:
+        return 1
+    return 0
 
 
 @dataclass
@@ -414,6 +442,8 @@ class TimePointScrollArea(QScrollArea):
 
 
 class ScreenshotWindow(QMainWindow):
+    update_check_finished = Signal(object)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_DISPLAY_NAME)
@@ -435,6 +465,8 @@ class ScreenshotWindow(QMainWindow):
         self.report_lock = threading.Lock()
         self.browser_capture_apps: list[tuple[str, str]] = []
         self.browser_capture_apps_ready = False
+        self.update_check_running = False
+        self.update_check_button: Optional[QPushButton] = None
         self.capture_target = CAPTURE_TARGET_FULLSCREEN
         self.region_customized = False
         self.region = self.default_region()
@@ -444,6 +476,7 @@ class ScreenshotWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.on_timer_timeout)
+        self.update_check_finished.connect(self.on_update_check_finished)
 
         self.build_ui()
         self.apply_styles()
@@ -1301,7 +1334,19 @@ class ScreenshotWindow(QMainWindow):
 
         github_button_layout.addWidget(github_icon)
         github_button_layout.addWidget(github_text)
-        layout.addWidget(github_button)
+
+        update_button = QPushButton("检查更新")
+        update_button.setObjectName("AboutUpdateButton")
+        update_button.setFixedHeight(40)
+        update_button.setCursor(QCursor(Qt.PointingHandCursor))
+        update_button.clicked.connect(lambda: self.check_for_updates(update_button))
+
+        link_row = QHBoxLayout()
+        link_row.setContentsMargins(0, 0, 0, 0)
+        link_row.setSpacing(10)
+        link_row.addWidget(github_button, 1)
+        link_row.addWidget(update_button, 1)
+        layout.addLayout(link_row)
 
         button_row = QHBoxLayout()
         button_row.setContentsMargins(0, 4, 0, 0)
@@ -1369,6 +1414,28 @@ class ScreenshotWindow(QMainWindow):
             QPushButton#AboutGithubButton:pressed {
                 background: #eeeeF3;
             }
+            QPushButton#AboutUpdateButton {
+                background: white;
+                border: 1px solid #e2e2e7;
+                border-radius: 10px;
+                color: #1d1d1f;
+                font-size: 13px;
+                font-weight: 700;
+                min-height: 38px;
+                padding: 0;
+            }
+            QPushButton#AboutUpdateButton:hover {
+                background: #fbfbfc;
+                border-color: #d2d2da;
+            }
+            QPushButton#AboutUpdateButton:pressed {
+                background: #eeeeF3;
+            }
+            QPushButton#AboutUpdateButton:disabled {
+                background: #f2f2f5;
+                border-color: #e4e4e8;
+                color: #9a9aa1;
+            }
             QLabel#AboutGithubIcon {
                 background: transparent;
                 border: none;
@@ -1403,6 +1470,98 @@ class ScreenshotWindow(QMainWindow):
 
     def open_github(self):
         QDesktopServices.openUrl(QUrl(GITHUB_URL))
+
+    def check_for_updates(self, button: Optional[QPushButton] = None):
+        if self.update_check_running:
+            return
+
+        self.update_check_running = True
+        self.update_check_button = button
+        if button is not None:
+            button.setEnabled(False)
+            button.setText("检查中...")
+
+        thread = threading.Thread(target=self.fetch_latest_release_worker, daemon=True)
+        thread.start()
+
+    def fetch_latest_release_worker(self):
+        try:
+            request = Request(
+                GITHUB_LATEST_RELEASE_URL,
+                headers={
+                    "User-Agent": f"Dingge-Screenshot/{APP_VERSION}",
+                },
+            )
+            with urlopen(request, timeout=8) as response:
+                latest_url = response.geturl()
+                response.read(1)
+            marker = "/releases/tag/"
+            if marker not in latest_url:
+                raise RuntimeError("没有读取到最新版本地址。")
+            latest_tag = unquote(latest_url.rsplit(marker, 1)[1].split("?", 1)[0].split("#", 1)[0])
+            self.update_check_finished.emit(
+                {
+                    "ok": True,
+                    "tag_name": latest_tag,
+                    "html_url": latest_url,
+                }
+            )
+        except HTTPError as exc:
+            if exc.code == 404:
+                message = "还没有检测到已发布的版本。"
+            else:
+                message = f"GitHub 返回错误：HTTP {exc.code}"
+            self.update_check_finished.emit({"ok": False, "message": message})
+        except URLError as exc:
+            self.update_check_finished.emit({"ok": False, "message": f"网络连接失败：{exc.reason}"})
+        except TimeoutError:
+            self.update_check_finished.emit({"ok": False, "message": "连接超时，请稍后再试。"})
+        except Exception as exc:  # noqa: BLE001
+            self.update_check_finished.emit({"ok": False, "message": f"检查更新失败：{exc}"})
+
+    def on_update_check_finished(self, result: dict):
+        self.update_check_running = False
+        button = self.update_check_button
+        self.update_check_button = None
+        if button is not None:
+            try:
+                button.setEnabled(True)
+                button.setText("检查更新")
+            except RuntimeError:
+                pass
+
+        if not result.get("ok"):
+            QMessageBox.warning(
+                self,
+                "检查更新失败",
+                f"{result.get('message', '暂时无法检查更新。')}\n\n你也可以手动打开 GitHub 发布页查看最新版本。",
+            )
+            return
+
+        latest_tag = result.get("tag_name") or ""
+        latest_url = result.get("html_url") or GITHUB_RELEASES_URL
+        if not latest_tag:
+            QMessageBox.information(self, "暂无更新", "没有读取到最新版本号。")
+            return
+
+        if compare_versions(APP_VERSION, latest_tag) >= 0:
+            QMessageBox.information(
+                self,
+                "已是最新版本",
+                f"当前版本：v{APP_VERSION}\n最新版本：{latest_tag}",
+            )
+            return
+
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Information)
+        message.setWindowTitle("发现新版本")
+        message.setText(f"发现新版本：{latest_tag}")
+        message.setInformativeText(f"当前版本：v{APP_VERSION}\n是否打开下载页面？")
+        open_button = message.addButton("打开下载页面", QMessageBox.AcceptRole)
+        message.addButton("稍后再说", QMessageBox.RejectRole)
+        message.exec()
+        if message.clickedButton() == open_button:
+            QDesktopServices.openUrl(QUrl(latest_url))
 
     def current_time_text(self) -> str:
         return datetime.now().replace(second=0, microsecond=0).strftime("%H:%M")
