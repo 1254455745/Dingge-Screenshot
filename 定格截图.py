@@ -35,6 +35,7 @@ try:
         QApplication,
         QAbstractSpinBox,
         QButtonGroup,
+        QCheckBox,
         QDialog,
         QFileDialog,
         QFrame,
@@ -467,6 +468,11 @@ class ScreenshotWindow(QMainWindow):
         self.browser_capture_apps_ready = False
         self.update_check_running = False
         self.update_check_button: Optional[QPushButton] = None
+        self.update_check_silent = False
+        self.auto_check_updates = True
+        self.latest_release_tag = ""
+        self.latest_release_url = GITHUB_RELEASES_URL
+        self.about_latest_version_label: Optional[QLabel] = None
         self.capture_target = CAPTURE_TARGET_FULLSCREEN
         self.region_customized = False
         self.region = self.default_region()
@@ -489,6 +495,7 @@ class ScreenshotWindow(QMainWindow):
         if self.system_name == "Darwin":
             QTimer.singleShot(400, self.warm_screen_recording_permission)
             QTimer.singleShot(600, self.warm_browser_capture_permissions)
+        QTimer.singleShot(1400, self.check_for_updates_on_startup)
 
     def default_region(self) -> CaptureRegion:
         screen = QApplication.primaryScreen()
@@ -1279,16 +1286,41 @@ class ScreenshotWindow(QMainWindow):
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
 
-        version_label = QLabel(f"版本 {APP_VERSION}")
+        version_label = QLabel(f"v{APP_VERSION}")
         version_label.setObjectName("AboutVersion")
         version_label.setAlignment(Qt.AlignCenter)
-        version_label.setFixedSize(76, 24)
+        version_label.setFixedSize(72, 24)
         layout.addWidget(version_label, 0, Qt.AlignHCenter)
 
         author_label = QLabel(f"作者：{AUTHOR_NAME}")
         author_label.setObjectName("AboutAuthor")
         author_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(author_label)
+
+        version_card = QFrame()
+        version_card.setObjectName("AboutVersionCard")
+        version_card_layout = QVBoxLayout(version_card)
+        version_card_layout.setContentsMargins(16, 12, 16, 12)
+        version_card_layout.setSpacing(8)
+
+        current_version_line = QLabel(f"当前版本：v{APP_VERSION}")
+        current_version_line.setObjectName("AboutVersionLine")
+        current_version_line.setAlignment(Qt.AlignCenter)
+        version_card_layout.addWidget(current_version_line)
+
+        latest_version_line = QLabel(self.latest_version_text())
+        latest_version_line.setObjectName("AboutVersionLine")
+        latest_version_line.setAlignment(Qt.AlignCenter)
+        self.about_latest_version_label = latest_version_line
+        version_card_layout.addWidget(latest_version_line)
+
+        auto_update_checkbox = QCheckBox("启动时自动检查更新")
+        auto_update_checkbox.setObjectName("AboutUpdateCheckBox")
+        auto_update_checkbox.setChecked(self.auto_check_updates)
+        auto_update_checkbox.toggled.connect(self.set_auto_check_updates)
+        version_card_layout.addWidget(auto_update_checkbox, 0, Qt.AlignCenter)
+
+        layout.addWidget(version_card)
 
         body_card = QFrame()
         body_card.setObjectName("AboutBodyCard")
@@ -1388,6 +1420,26 @@ class ScreenshotWindow(QMainWindow):
                 font-size: 13px;
                 font-weight: 600;
             }
+            QFrame#AboutVersionCard {
+                background: white;
+                border: 1px solid #e4e4e8;
+                border-radius: 12px;
+            }
+            QLabel#AboutVersionLine {
+                background: transparent;
+                border: none;
+                color: #36363a;
+                font-size: 13px;
+                font-weight: 650;
+                padding: 0;
+            }
+            QCheckBox#AboutUpdateCheckBox {
+                background: transparent;
+                border: none;
+                color: #6e6e73;
+                font-size: 13px;
+                spacing: 8px;
+            }
             QFrame#AboutBodyCard {
                 background: white;
                 border: 1px solid #e4e4e8;
@@ -1471,12 +1523,35 @@ class ScreenshotWindow(QMainWindow):
     def open_github(self):
         QDesktopServices.openUrl(QUrl(GITHUB_URL))
 
-    def check_for_updates(self, button: Optional[QPushButton] = None):
+    def latest_version_text(self) -> str:
+        if self.latest_release_tag:
+            return f"最新版本：{self.latest_release_tag}"
+        return "最新版本：尚未检查"
+
+    def refresh_latest_version_label(self):
+        if self.about_latest_version_label is None:
+            return
+        try:
+            self.about_latest_version_label.setText(self.latest_version_text())
+        except RuntimeError:
+            self.about_latest_version_label = None
+
+    def set_auto_check_updates(self, checked: bool):
+        self.auto_check_updates = checked
+        self.settings.setValue("updates/auto_check", checked)
+        self.settings.sync()
+
+    def check_for_updates_on_startup(self):
+        if self.auto_check_updates:
+            self.check_for_updates(silent=True)
+
+    def check_for_updates(self, button: Optional[QPushButton] = None, silent: bool = False):
         if self.update_check_running:
             return
 
         self.update_check_running = True
         self.update_check_button = button
+        self.update_check_silent = silent
         if button is not None:
             button.setEnabled(False)
             button.setText("检查中...")
@@ -1521,6 +1596,8 @@ class ScreenshotWindow(QMainWindow):
 
     def on_update_check_finished(self, result: dict):
         self.update_check_running = False
+        silent = self.update_check_silent
+        self.update_check_silent = False
         button = self.update_check_button
         self.update_check_button = None
         if button is not None:
@@ -1531,6 +1608,8 @@ class ScreenshotWindow(QMainWindow):
                 pass
 
         if not result.get("ok"):
+            if silent:
+                return
             QMessageBox.warning(
                 self,
                 "检查更新失败",
@@ -1541,10 +1620,18 @@ class ScreenshotWindow(QMainWindow):
         latest_tag = result.get("tag_name") or ""
         latest_url = result.get("html_url") or GITHUB_RELEASES_URL
         if not latest_tag:
+            if silent:
+                return
             QMessageBox.information(self, "暂无更新", "没有读取到最新版本号。")
             return
 
+        self.latest_release_tag = latest_tag
+        self.latest_release_url = latest_url
+        self.refresh_latest_version_label()
+
         if compare_versions(APP_VERSION, latest_tag) >= 0:
+            if silent:
+                return
             QMessageBox.information(
                 self,
                 "已是最新版本",
@@ -1661,6 +1748,7 @@ class ScreenshotWindow(QMainWindow):
 
         self.daily_times = self.load_saved_times()
         self.render_time_chips()
+        self.auto_check_updates = self.setting_bool("updates/auto_check", True)
 
         active_custom = self.setting_bool("region/customized", False)
         saved_region = self.load_saved_region()
@@ -1713,6 +1801,7 @@ class ScreenshotWindow(QMainWindow):
         self.settings.setValue("region/y", self.region.y)
         self.settings.setValue("region/width", self.region.width)
         self.settings.setValue("region/height", self.region.height)
+        self.settings.setValue("updates/auto_check", self.auto_check_updates)
         if self.custom_region is not None:
             self.settings.setValue("region/custom_x", self.custom_region.x)
             self.settings.setValue("region/custom_y", self.custom_region.y)
@@ -2643,6 +2732,23 @@ class ScreenshotWindow(QMainWindow):
     </section>
 """
 
+    def set_browser_capture_progress(
+        self,
+        browser_name: str,
+        current_index: int,
+        total_count: Optional[int] = None,
+        title: str = "",
+    ):
+        self.status_card.set_value("正在截图")
+        if total_count is not None and total_count > 0:
+            text = f"正在截图 {browser_name} 第 {current_index}/{total_count} 个标签页"
+        else:
+            text = f"正在截图 {browser_name} 第 {current_index} 个标签页"
+        if title:
+            text += f"\n{title}"
+        self.note_label.setText(text)
+        QApplication.processEvents()
+
     def save_browser_page_screenshots(self, timestamp: str, max_count: int, output_dir: Path) -> list[CaptureRecord]:
         if max_count <= 0:
             return []
@@ -2657,11 +2763,13 @@ class ScreenshotWindow(QMainWindow):
             raise RuntimeError("没有检测到已打开的浏览器标签页。")
 
         records: list[CaptureRecord] = []
+        total_count = min(len(tabs), max_count)
         try:
             for index, tab in enumerate(tabs, start=1):
                 if len(records) >= max_count:
                     break
 
+                self.set_browser_capture_progress(tab.display_name, index, total_count, tab.title)
                 self.activate_browser_tab(tab)
                 QApplication.processEvents()
                 time.sleep(0.45)
@@ -2806,6 +2914,12 @@ class ScreenshotWindow(QMainWindow):
                         break
 
                     seen_titles.add(current_title)
+                    self.set_browser_capture_progress(
+                        browser_name,
+                        len(records) + 1,
+                        None,
+                        current_title,
+                    )
                     title_part = self.safe_filename_part(current_title, f"tab_{len(seen_titles)}")
                     filepath = (
                         output_dir
