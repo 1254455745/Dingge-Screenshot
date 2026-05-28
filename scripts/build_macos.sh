@@ -28,7 +28,14 @@ rm -rf build dist
 
 codesign --force --deep --sign - "dist/定格截图.app"
 ditto -c -k --sequesterRsrc --keepParent "dist/定格截图.app" "dist/定格截图-macOS.zip"
-hdiutil create -volname "定格截图" -srcfolder "dist/定格截图.app" -ov -format UDZO "dist/定格截图-macOS.dmg"
+
+DMG_ROOT="dist/dmg-root"
+rm -rf "$DMG_ROOT"
+mkdir -p "$DMG_ROOT"
+cp -R "dist/定格截图.app" "$DMG_ROOT/"
+ln -s /Applications "$DMG_ROOT/Applications"
+hdiutil create -volname "定格截图" -srcfolder "$DMG_ROOT" -ov -format UDZO "dist/定格截图-macOS.dmg"
+rm -rf "$DMG_ROOT"
 
 echo "macOS app: dist/定格截图.app"
 echo "macOS zip: dist/定格截图-macOS.zip"
