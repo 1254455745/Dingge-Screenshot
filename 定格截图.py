@@ -20,7 +20,20 @@ except ImportError:
     ImageGrab = None
 
 try:
-    from PySide6.QtCore import QByteArray, QPoint, QRect, QSettings, QSize, QTimer, Qt, QUrl, Signal
+    from PySide6.QtCore import (
+        QByteArray,
+        QBuffer,
+        QEvent,
+        QIODevice,
+        QPoint,
+        QRect,
+        QSettings,
+        QSize,
+        QTimer,
+        Qt,
+        QUrl,
+        Signal,
+    )
     from PySide6.QtGui import (
         QAction,
         QColor,
@@ -28,6 +41,7 @@ try:
         QDesktopServices,
         QFont,
         QIcon,
+        QImage,
         QPainter,
         QPainterPath,
         QPen,
@@ -72,11 +86,33 @@ except ImportError:
     raise SystemExit("Missing PySide6_Essentials")
 
 
+PYOBJC_AVAILABLE = False
+if platform.system() == "Darwin":
+    try:
+        import objc
+        from AppKit import (
+            NSApp,
+            NSMenu,
+            NSMenuItem,
+            NSStatusBar,
+            NSVariableStatusItemLength,
+            NSEventMaskLeftMouseUp,
+            NSEventMaskRightMouseUp,
+            NSEventTypeRightMouseUp,
+            NSImage,
+        )
+        from Foundation import NSData, NSObject
+
+        PYOBJC_AVAILABLE = True
+    except ImportError:
+        PYOBJC_AVAILABLE = False
+
+
 SETTINGS_ORGANIZATION = "Anzhen"
 SETTINGS_APPLICATION = "TimedScreenshotTool"
 SETTINGS_LAYOUT_VERSION = 7
 APP_DISPLAY_NAME = "定格截图"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 
 def app_base_dir() -> Path:
@@ -95,6 +131,8 @@ def default_save_dir() -> Path:
 
 APP_DIR = app_base_dir()
 LOGO_PATH = APP_DIR / "assets" / "定格截图logo.png"
+STATUSBAR_TEMPLATE_SVG_PATH = APP_DIR / "assets" / "statusbar-template.svg"
+STATUSBAR_TEMPLATE_SOURCE_PATH = APP_DIR / "assets" / "statusbar-template-source.png"
 GITHUB_URL = "https://github.com/1254455745/Dingge-Screenshot"
 GITHUB_RELEASES_URL = f"{GITHUB_URL}/releases"
 GITHUB_LATEST_RELEASE_URL = f"{GITHUB_RELEASES_URL}/latest"
@@ -177,58 +215,140 @@ def app_icon_pixmap(size: int) -> QPixmap:
     return base
 
 
+def image_based_template_pixmap(source_path: Path, size: int) -> QPixmap:
+    source = QPixmap(str(source_path))
+    if source.isNull():
+        return QPixmap()
+
+    normalized = normalize_template_image(source.toImage())
+    return QPixmap.fromImage(normalized).scaled(
+        size,
+        size,
+        Qt.KeepAspectRatio,
+        Qt.SmoothTransformation,
+    )
+
+
+def normalize_template_image(image: QImage) -> QImage:
+    normalized = image.convertToFormat(QImage.Format.Format_ARGB32)
+    width = normalized.width()
+    height = normalized.height()
+
+    for y in range(height):
+        for x in range(width):
+            color = normalized.pixelColor(x, y)
+            if color.alpha() == 0:
+                continue
+
+            brightness = (color.red() + color.green() + color.blue()) / 3
+            if brightness < 80:
+                color.setAlpha(0)
+            else:
+                color.setRed(255)
+                color.setGreen(255)
+                color.setBlue(255)
+                color.setAlpha(255)
+            normalized.setPixelColor(x, y, color)
+
+    return normalized
+
+
+def svg_file_pixmap(source_path: Path, size: int) -> QPixmap:
+    if not source_path.exists():
+        return QPixmap()
+
+    render_size = size * 2 if platform.system() == "Darwin" else size
+    pixmap = QPixmap(render_size, render_size)
+    pixmap.fill(QColor(0, 0, 0, 0))
+
+    renderer = QSvgRenderer(str(source_path))
+    if not renderer.isValid():
+        return QPixmap()
+
+    painter = QPainter(pixmap)
+    renderer.render(painter)
+    painter.end()
+
+    normalized = QPixmap.fromImage(normalize_template_image(pixmap.toImage()))
+    if platform.system() == "Darwin":
+        normalized.setDevicePixelRatio(2.0)
+    return normalized
+
+
 def mac_tray_template_pixmap(size: int) -> QPixmap:
+    if STATUSBAR_TEMPLATE_SVG_PATH.exists():
+        pixmap = svg_file_pixmap(STATUSBAR_TEMPLATE_SVG_PATH, size)
+        if not pixmap.isNull():
+            return pixmap
+
+    if STATUSBAR_TEMPLATE_SOURCE_PATH.exists():
+        pixmap = image_based_template_pixmap(STATUSBAR_TEMPLATE_SOURCE_PATH, size)
+        if not pixmap.isNull():
+            return pixmap
+
     canvas_size = max(24, size * 2)
     pixmap = QPixmap(canvas_size, canvas_size)
     pixmap.fill(QColor(0, 0, 0, 0))
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-
-    stroke = max(2.4, canvas_size * 0.11)
-    pen = QPen(QColor("#ffffff"), stroke, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-    painter.setPen(pen)
+    outer_pen = QPen(QColor("#ffffff"), canvas_size * 0.085, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    inner_pen = QPen(QColor("#ffffff"), canvas_size * 0.066, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
     painter.setBrush(Qt.NoBrush)
 
-    inset = canvas_size * 0.18
-    span = canvas_size * 0.23
-
-    path = QPainterPath()
-    path.moveTo(inset + span, inset)
-    path.lineTo(inset, inset)
-    path.lineTo(inset, inset + span)
-
-    path.moveTo(canvas_size - inset - span, inset)
-    path.lineTo(canvas_size - inset, inset)
-    path.lineTo(canvas_size - inset, inset + span)
-
-    path.moveTo(inset, canvas_size - inset - span)
-    path.lineTo(inset, canvas_size - inset)
-    path.lineTo(inset + span, canvas_size - inset)
-
-    path.moveTo(canvas_size - inset - span, canvas_size - inset)
-    path.lineTo(canvas_size - inset, canvas_size - inset)
-    path.lineTo(canvas_size - inset, canvas_size - inset - span)
-    painter.drawPath(path)
-
-    ring_rect = QRect(
-        round(canvas_size * 0.33),
-        round(canvas_size * 0.33),
-        round(canvas_size * 0.34),
-        round(canvas_size * 0.34),
+    body_path = QPainterPath()
+    body_path.addRoundedRect(
+        canvas_size * 0.31,
+        canvas_size * 0.16,
+        canvas_size * 0.50,
+        canvas_size * 0.68,
+        canvas_size * 0.11,
+        canvas_size * 0.11,
     )
-    painter.drawEllipse(ring_rect)
+    painter.setPen(outer_pen)
+    painter.drawPath(body_path)
 
-    painter.setBrush(QColor("#ffffff"))
     painter.setPen(Qt.NoPen)
-    dot_size = max(4, round(canvas_size * 0.12))
-    dot_offset = round(canvas_size * 0.05)
-    painter.drawEllipse(
-        round(canvas_size * 0.62),
-        round(canvas_size * 0.22) - dot_offset // 2,
-        dot_size,
-        dot_size,
+    painter.setBrush(QColor("#ffffff"))
+    painter.drawRoundedRect(
+        canvas_size * 0.72,
+        canvas_size * 0.35,
+        canvas_size * 0.10,
+        canvas_size * 0.10,
+        canvas_size * 0.03,
+        canvas_size * 0.03,
     )
+
+    bolt = QPainterPath()
+    bolt.moveTo(canvas_size * 0.12, canvas_size * 0.18)
+    bolt.lineTo(canvas_size * 0.27, canvas_size * 0.18)
+    bolt.lineTo(canvas_size * 0.21, canvas_size * 0.35)
+    bolt.lineTo(canvas_size * 0.34, canvas_size * 0.35)
+    bolt.lineTo(canvas_size * 0.17, canvas_size * 0.63)
+    bolt.lineTo(canvas_size * 0.22, canvas_size * 0.44)
+    bolt.lineTo(canvas_size * 0.10, canvas_size * 0.44)
+    bolt.closeSubpath()
+    painter.drawPath(bolt)
+
+    painter.setPen(inner_pen)
+    painter.setBrush(Qt.NoBrush)
+    painter.drawEllipse(
+        QRect(
+            round(canvas_size * 0.20),
+            round(canvas_size * 0.24),
+            round(canvas_size * 0.46),
+            round(canvas_size * 0.46),
+        )
+    )
+
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor("#ffffff"))
+    play = QPainterPath()
+    play.moveTo(canvas_size * 0.31, canvas_size * 0.33)
+    play.lineTo(canvas_size * 0.31, canvas_size * 0.61)
+    play.lineTo(canvas_size * 0.55, canvas_size * 0.47)
+    play.closeSubpath()
+    painter.drawPath(play)
     painter.end()
 
     return pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -267,19 +387,106 @@ def tray_status_icon(state: str, size: int = 22) -> QIcon:
     return icon
 
 
-def github_icon_pixmap(size: int) -> QPixmap:
-    icon = QPixmap(size, size)
+def settings_icon_pixmap(size: int) -> QPixmap:
+    return svg_icon_pixmap(
+        size,
+        """
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <path fill="#6e6e73" d="M10.325 4.317a1.724 1.724 0 0 1 3.35 0a1.724 1.724 0 0 0 2.573 1.066a1.724 1.724 0 0 1 2.898 1.675a1.724 1.724 0 0 0 .849 2.437a1.724 1.724 0 0 1 0 3.01a1.724 1.724 0 0 0-.848 2.437a1.724 1.724 0 0 1-2.898 1.675a1.724 1.724 0 0 0-2.573 1.066a1.724 1.724 0 0 1-3.35 0a1.724 1.724 0 0 0-2.573-1.066a1.724 1.724 0 0 1-2.898-1.675a1.724 1.724 0 0 0-.848-2.437a1.724 1.724 0 0 1 0-3.01a1.724 1.724 0 0 0 .848-2.437a1.724 1.724 0 0 1 2.898-1.675a1.724 1.724 0 0 0 2.573-1.066ZM12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z"/>
+        </svg>
+        """,
+    )
+
+
+def svg_icon_pixmap(size: int, svg: str) -> QPixmap:
+    render_size = size * 2 if platform.system() == "Darwin" else size
+    icon = QPixmap(render_size, render_size)
     icon.fill(QColor(0, 0, 0, 0))
-    svg = """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-      <path fill="#1d1d1f" d="M12 .297C5.37.297 0 5.67 0 12.297c0 5.303 3.438 9.8 8.207 11.387.6.113.82-.258.82-.578 0-.285-.01-1.04-.016-2.04-3.338.727-4.043-1.608-4.043-1.608-.547-1.387-1.336-1.758-1.336-1.758-1.09-.746.083-.73.083-.73 1.205.086 1.84 1.238 1.84 1.238 1.07 1.835 2.808 1.305 3.492.997.108-.775.418-1.305.762-1.605-2.665-.303-5.466-1.333-5.466-5.93 0-1.31.467-2.38 1.235-3.22-.124-.303-.535-1.523.117-3.176 0 0 1.008-.322 3.3 1.23a11.48 11.48 0 0 1 3.005-.404c1.02.005 2.047.138 3.006.404 2.29-1.552 3.296-1.23 3.296-1.23.654 1.653.243 2.873.12 3.176.77.84 1.233 1.91 1.233 3.22 0 4.61-2.805 5.624-5.477 5.92.43.37.814 1.103.814 2.222 0 1.605-.015 2.898-.015 3.293 0 .322.216.697.825.58C20.565 22.092 24 17.597 24 12.297c0-6.627-5.373-12-12-12"/>
-    </svg>
-    """
     renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
     painter = QPainter(icon)
     renderer.render(painter)
     painter.end()
+    if platform.system() == "Darwin":
+        icon.setDevicePixelRatio(2.0)
     return icon
+
+
+def github_icon_pixmap(size: int) -> QPixmap:
+    return svg_icon_pixmap(
+        size,
+        """
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <path fill="#1d1d1f" d="M12 .297C5.37.297 0 5.67 0 12.297c0 5.303 3.438 9.8 8.207 11.387.6.113.82-.258.82-.578 0-.285-.01-1.04-.016-2.04-3.338.727-4.043-1.608-4.043-1.608-.547-1.387-1.336-1.758-1.336-1.758-1.09-.746.083-.73.083-.73 1.205.086 1.84 1.238 1.84 1.238 1.07 1.835 2.808 1.305 3.492.997.108-.775.418-1.305.762-1.605-2.665-.303-5.466-1.333-5.466-5.93 0-1.31.467-2.38 1.235-3.22-.124-.303-.535-1.523.117-3.176 0 0 1.008-.322 3.3 1.23a11.48 11.48 0 0 1 3.005-.404c1.02.005 2.047.138 3.006.404 2.29-1.552 3.296-1.23 3.296-1.23.654 1.653.243 2.873.12 3.176.77.84 1.233 1.91 1.233 3.22 0 4.61-2.805 5.624-5.477 5.92.43.37.814 1.103.814 2.222 0 1.605-.015 2.898-.015 3.293 0 .322.216.697.825.58C20.565 22.092 24 17.597 24 12.297c0-6.627-5.373-12-12-12"/>
+        </svg>
+        """,
+    )
+
+
+def close_mode_icon_pixmap(mode: str, size: int, color: str = "#1d1d1f") -> QPixmap:
+    if mode == "tray":
+        svg = f"""
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <rect x="4" y="5" width="16" height="11" rx="3" fill="none" stroke="{color}" stroke-width="2"/>
+          <path d="M8 19.5h8" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+          <path d="M12 8v5" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+          <path d="m9.5 11 2.5 2.5L14.5 11" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        """
+    elif mode == "quit":
+        svg = f"""
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8" fill="none" stroke="{color}" stroke-width="2"/>
+          <path d="m9.2 9.2 5.6 5.6m0-5.6-5.6 5.6" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        """
+    else:
+        svg = f"""
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8" fill="none" stroke="{color}" stroke-width="2"/>
+        </svg>
+        """
+    return svg_icon_pixmap(size, svg)
+
+
+def settings_page_icon_pixmap(page: str, size: int, color: str = "#4b4b51") -> QPixmap:
+    icons = {
+        "general": f"""
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+              <path d="M5 7h14M8 12h8M10 17h4" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+              <circle cx="9" cy="7" r="2" fill="{color}"/>
+              <circle cx="14" cy="12" r="2" fill="{color}"/>
+              <circle cx="12" cy="17" r="2" fill="{color}"/>
+            </svg>
+        """,
+        "updates": f"""
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+              <path d="M12 5v8m0 0-3-3m3 3 3-3" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M6 14a6 6 0 0 0 11.2 2M18 10A6 6 0 0 0 6.8 8" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+        """,
+        "about": f"""
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="9" fill="none" stroke="{color}" stroke-width="2"/>
+              <circle cx="12" cy="8" r="1.4" fill="{color}"/>
+              <path d="M12 11v5" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+        """,
+    }
+    return svg_icon_pixmap(size, icons.get(page, icons["general"]))
+
+
+def nsimage_from_pixmap(pixmap: QPixmap):
+    if not PYOBJC_AVAILABLE or pixmap.isNull():
+        return None
+
+    byte_array = QByteArray()
+    buffer = QBuffer(byte_array)
+    buffer.open(QIODevice.WriteOnly)
+    pixmap.save(buffer, "PNG")
+    buffer.close()
+
+    image_data = NSData.dataWithBytes_length_(byte_array.data(), byte_array.size())
+    return NSImage.alloc().initWithData_(image_data)
 
 
 def version_parts(version: str) -> list[int]:
@@ -544,6 +751,36 @@ class TimePointScrollArea(QScrollArea):
         return QSize(0, self.minimumHeight())
 
 
+if PYOBJC_AVAILABLE:
+    class MacStatusItemTarget(NSObject):
+        def initWithWindow_(self, window):
+            self = objc.super(MacStatusItemTarget, self).init()
+            if self is None:
+                return None
+            self.window = window
+            return self
+
+        def handleStatusItemClick_(self, _sender):
+            event = NSApp.currentEvent()
+            event_type = event.type() if event is not None else None
+            if event_type == NSEventTypeRightMouseUp:
+                QTimer.singleShot(0, self.window.show_tray_context_menu)
+                return
+            QTimer.singleShot(0, self.window.show_main_window)
+
+        def toggleMainWindow_(self, _sender):
+            QTimer.singleShot(0, self.window.toggle_main_window_visibility)
+
+        def startCapture_(self, _sender):
+            QTimer.singleShot(0, self.window.start_capture)
+
+        def stopCapture_(self, _sender):
+            QTimer.singleShot(0, self.window.stop_capture)
+
+        def requestQuit_(self, _sender):
+            QTimer.singleShot(0, self.window.request_quit)
+
+
 class ScreenshotWindow(QMainWindow):
     update_check_finished = Signal(object)
 
@@ -576,10 +813,25 @@ class ScreenshotWindow(QMainWindow):
         self.latest_release_url = GITHUB_RELEASES_URL
         self.about_latest_version_label: Optional[QLabel] = None
         self.tray_icon: Optional[QSystemTrayIcon] = None
+        self.tray_menu: Optional[QMenu] = None
         self.tray_show_action: Optional[QAction] = None
         self.tray_start_action: Optional[QAction] = None
         self.tray_stop_action: Optional[QAction] = None
+        self.native_status_item = None
+        self.native_status_button = None
+        self.native_status_target = None
+        self.native_status_menu = None
+        self.native_menu_show_item = None
+        self.native_menu_start_item = None
+        self.native_menu_stop_item = None
+        self.native_menu_quit_item = None
+        self.tray_context_menu_timer = QTimer(self)
+        self.tray_context_menu_timer.setSingleShot(True)
+        self.tray_context_menu_timer.timeout.connect(self.show_tray_context_menu)
+        self.last_tray_primary_click_at = 0.0
         self.close_behavior = CLOSE_BEHAVIOR_ASK
+        self.settings_page_group: Optional[QButtonGroup] = None
+        self.settings_page_stack: Optional[QStackedWidget] = None
         self.close_behavior_hint_label: Optional[QLabel] = None
         self.close_to_tray_button: Optional[QPushButton] = None
         self.close_to_quit_button: Optional[QPushButton] = None
@@ -596,6 +848,10 @@ class ScreenshotWindow(QMainWindow):
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.on_timer_timeout)
         self.update_check_finished.connect(self.on_update_check_finished)
+        app = QApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(self.on_application_state_changed)
+            app.installEventFilter(self)
 
         self.build_ui()
         self.apply_styles()
@@ -652,12 +908,14 @@ class ScreenshotWindow(QMainWindow):
         header.addWidget(title, 0, Qt.AlignVCenter)
         header.addStretch(1)
 
-        self.about_button = QPushButton("i")
-        self.about_button.setObjectName("AboutButton")
-        self.about_button.setFixedSize(32, 32)
-        self.about_button.setToolTip("关于")
-        self.about_button.clicked.connect(self.show_about)
-        header.addWidget(self.about_button)
+        self.settings_button = QPushButton()
+        self.settings_button.setIcon(QIcon(settings_icon_pixmap(18)))
+        self.settings_button.setIconSize(QSize(16, 16))
+        self.settings_button.setObjectName("SettingsButton")
+        self.settings_button.setFixedSize(32, 32)
+        self.settings_button.setToolTip("设置")
+        self.settings_button.clicked.connect(self.show_settings_dialog)
+        header.addWidget(self.settings_button)
         root.addLayout(header)
 
         main = QHBoxLayout()
@@ -675,7 +933,6 @@ class ScreenshotWindow(QMainWindow):
         settings_layout.addLayout(self.build_path_section())
         settings_layout.addLayout(self.build_mode_section(), 1)
         settings_layout.addLayout(self.build_region_section())
-        settings_layout.addLayout(self.build_window_section())
 
         side = QFrame()
         side.setObjectName("SidePanel")
@@ -1042,43 +1299,6 @@ class ScreenshotWindow(QMainWindow):
         layout.addWidget(region_value_row)
         return layout
 
-    def build_window_section(self):
-        layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        label = self.make_label("关闭行为")
-        label.setFixedHeight(SECTION_LABEL_HEIGHT)
-        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        layout.addWidget(label)
-
-        segment = QFrame()
-        segment.setObjectName("Segment")
-        segment_layout = QHBoxLayout(segment)
-        segment_layout.setContentsMargins(3, 3, 3, 3)
-        segment_layout.setSpacing(3)
-
-        self.close_to_tray_button = QPushButton("点叉最小化")
-        self.close_to_quit_button = QPushButton("点叉退出")
-        self.close_behavior_group = QButtonGroup(self)
-        self.close_behavior_group.setExclusive(True)
-        self.close_behavior_group.addButton(self.close_to_tray_button, 0)
-        self.close_behavior_group.addButton(self.close_to_quit_button, 1)
-        for button in (self.close_to_tray_button, self.close_to_quit_button):
-            button.setCheckable(True)
-            button.setObjectName("SegmentButton")
-            segment_layout.addWidget(button)
-
-        self.close_to_tray_button.clicked.connect(lambda: self.set_close_behavior(CLOSE_BEHAVIOR_TRAY))
-        self.close_to_quit_button.clicked.connect(lambda: self.set_close_behavior(CLOSE_BEHAVIOR_QUIT))
-        layout.addWidget(segment)
-
-        self.close_behavior_hint_label = QLabel()
-        self.close_behavior_hint_label.setObjectName("InlineHint")
-        self.close_behavior_hint_label.setWordWrap(True)
-        layout.addWidget(self.close_behavior_hint_label)
-        return layout
-
     def apply_styles(self):
         self.setStyleSheet(
             """
@@ -1103,10 +1323,10 @@ class ScreenshotWindow(QMainWindow):
                 background: transparent;
                 border: none;
             }
-            QPushButton#AboutButton {
-                background: white;
-                border: 1px solid #e2e2e7;
-                border-radius: 16px;
+            QPushButton#SettingsButton {
+                background: transparent;
+                border: none;
+                border-radius: 10px;
                 color: #6e6e73;
                 font-size: 15px;
                 font-weight: 700;
@@ -1116,9 +1336,12 @@ class ScreenshotWindow(QMainWindow):
                 min-width: 32px;
                 padding: 0;
             }
-            QPushButton#AboutButton:hover {
-                background: #f8f8fa;
+            QPushButton#SettingsButton:hover {
+                background: rgba(29, 29, 31, 0.06);
                 color: #1d1d1f;
+            }
+            QPushButton#SettingsButton:pressed {
+                background: rgba(29, 29, 31, 0.10);
             }
             QFrame#Panel,
             QFrame#SidePanel,
@@ -1413,264 +1636,396 @@ class ScreenshotWindow(QMainWindow):
         button.style().polish(button)
         return button
 
-    def show_about(self):
+    def show_settings_dialog(self):
         dialog = QDialog(self)
-        dialog.setObjectName("AboutDialog")
-        dialog.setWindowTitle(f"关于 {APP_DISPLAY_NAME}")
+        dialog.setObjectName("SettingsDialog")
+        dialog.setWindowTitle("设置")
         dialog.setModal(True)
-        dialog.setFixedWidth(600)
+        dialog.resize(760, 520)
+        dialog.setMinimumSize(760, 520)
         if LOGO_PATH.exists():
             dialog.setWindowIcon(QIcon(app_icon_pixmap(256)))
+        dialog.finished.connect(self.on_settings_dialog_closed)
 
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(30, 26, 30, 24)
-        layout.setSpacing(14)
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        logo_label = QLabel()
-        logo_label.setObjectName("AboutLogo")
-        logo_label.setFixedSize(88, 88)
-        logo_label.setPixmap(logo_pixmap(88))
-        logo_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(logo_label, 0, Qt.AlignHCenter)
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(0)
+        root.addLayout(content, 1)
 
-        title_label = QLabel(APP_DISPLAY_NAME)
-        title_label.setObjectName("AboutTitle")
-        title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
+        sidebar = QFrame()
+        sidebar.setObjectName("SettingsSidebar")
+        sidebar.setFixedWidth(168)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(18, 24, 18, 18)
+        sidebar_layout.setSpacing(8)
 
-        version_label = QLabel(f"v{APP_VERSION}")
-        version_label.setObjectName("AboutVersion")
-        version_label.setAlignment(Qt.AlignCenter)
-        version_label.setFixedSize(72, 24)
-        layout.addWidget(version_label, 0, Qt.AlignHCenter)
+        sidebar_title = QLabel("设置")
+        sidebar_title.setObjectName("SettingsSidebarTitle")
+        sidebar_layout.addWidget(sidebar_title)
 
-        author_label = QLabel(f"作者：{AUTHOR_NAME}")
-        author_label.setObjectName("AboutAuthor")
-        author_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(author_label)
+        self.settings_page_group = QButtonGroup(dialog)
+        self.settings_page_group.setExclusive(True)
+        page_buttons: list[QPushButton] = []
+        for index, (title, page_key) in enumerate((("通用", "general"), ("更新", "updates"), ("关于", "about"))):
+            button = QPushButton(title)
+            button.setObjectName("SettingsPageButton")
+            button.setCheckable(True)
+            button.setCursor(QCursor(Qt.PointingHandCursor))
+            button.setIcon(QIcon(settings_page_icon_pixmap(page_key, 16)))
+            button.setIconSize(QSize(16, 16))
+            self.settings_page_group.addButton(button, index)
+            sidebar_layout.addWidget(button)
+            page_buttons.append(button)
+        sidebar_layout.addStretch(1)
+        content.addWidget(sidebar)
 
-        version_card = QFrame()
-        version_card.setObjectName("AboutVersionCard")
-        version_card_layout = QVBoxLayout(version_card)
-        version_card_layout.setContentsMargins(16, 12, 16, 12)
-        version_card_layout.setSpacing(8)
+        body = QFrame()
+        body.setObjectName("SettingsBody")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(24, 24, 24, 18)
+        body_layout.setSpacing(18)
+
+        self.settings_page_stack = QStackedWidget()
+        self.settings_page_stack.setObjectName("SettingsPageStack")
+        body_layout.addWidget(self.settings_page_stack, 1)
+
+        general_page = QWidget()
+        general_layout = QVBoxLayout(general_page)
+        general_layout.setContentsMargins(0, 0, 0, 0)
+        general_layout.setSpacing(14)
+        general_title = QLabel("关闭行为")
+        general_title.setObjectName("SettingsPageTitle")
+        general_layout.addWidget(general_title)
+
+        general_card = QFrame()
+        general_card.setObjectName("SettingsCard")
+        general_card_layout = QVBoxLayout(general_card)
+        general_card_layout.setContentsMargins(18, 18, 18, 18)
+        general_card_layout.setSpacing(12)
+
+        general_desc = QLabel("点右上角关闭时，定格截图是缩小到图标里继续运行，还是直接退出。")
+        general_desc.setObjectName("SettingsHintText")
+        general_desc.setWordWrap(True)
+        general_card_layout.addWidget(general_desc)
+
+        self.close_to_tray_button = QPushButton("缩小到图标")
+        self.close_to_quit_button = QPushButton("直接退出")
+        self.close_behavior_group = QButtonGroup(dialog)
+        self.close_behavior_group.setExclusive(True)
+        self.close_behavior_group.addButton(self.close_to_tray_button, 0)
+        self.close_behavior_group.addButton(self.close_to_quit_button, 1)
+        for button in (self.close_to_tray_button, self.close_to_quit_button):
+            button.setCheckable(True)
+            button.setObjectName("SettingsSegmentButton")
+            button.setMinimumHeight(46)
+        close_segment = QFrame()
+        close_segment.setObjectName("SettingsSegment")
+        close_segment_layout = QHBoxLayout(close_segment)
+        close_segment_layout.setContentsMargins(3, 3, 3, 3)
+        close_segment_layout.setSpacing(3)
+        close_segment_layout.addWidget(self.close_to_tray_button)
+        close_segment_layout.addWidget(self.close_to_quit_button)
+        self.close_to_tray_button.clicked.connect(lambda: self.set_close_behavior(CLOSE_BEHAVIOR_TRAY))
+        self.close_to_quit_button.clicked.connect(lambda: self.set_close_behavior(CLOSE_BEHAVIOR_QUIT))
+        general_card_layout.addWidget(close_segment)
+
+        self.close_behavior_hint_label = QLabel()
+        self.close_behavior_hint_label.setObjectName("SettingsHintBox")
+        self.close_behavior_hint_label.setWordWrap(True)
+        general_card_layout.addWidget(self.close_behavior_hint_label)
+        general_layout.addWidget(general_card)
+        general_layout.addStretch(1)
+
+        updates_page = QWidget()
+        updates_layout = QVBoxLayout(updates_page)
+        updates_layout.setContentsMargins(0, 0, 0, 0)
+        updates_layout.setSpacing(14)
+        updates_title = QLabel("更新")
+        updates_title.setObjectName("SettingsPageTitle")
+        updates_layout.addWidget(updates_title)
+
+        updates_card = QFrame()
+        updates_card.setObjectName("SettingsCard")
+        updates_card_layout = QVBoxLayout(updates_card)
+        updates_card_layout.setContentsMargins(18, 18, 18, 18)
+        updates_card_layout.setSpacing(10)
 
         current_version_line = QLabel(f"当前版本：v{APP_VERSION}")
-        current_version_line.setObjectName("AboutVersionLine")
-        current_version_line.setAlignment(Qt.AlignCenter)
-        version_card_layout.addWidget(current_version_line)
+        current_version_line.setObjectName("SettingsVersionLine")
+        updates_card_layout.addWidget(current_version_line)
 
         latest_version_line = QLabel(self.latest_version_text())
-        latest_version_line.setObjectName("AboutVersionLine")
-        latest_version_line.setAlignment(Qt.AlignCenter)
+        latest_version_line.setObjectName("SettingsVersionLine")
         self.about_latest_version_label = latest_version_line
-        version_card_layout.addWidget(latest_version_line)
+        updates_card_layout.addWidget(latest_version_line)
 
         auto_update_checkbox = QCheckBox("启动时自动检查更新")
-        auto_update_checkbox.setObjectName("AboutUpdateCheckBox")
+        auto_update_checkbox.setObjectName("SettingsCheckBox")
         auto_update_checkbox.setChecked(self.auto_check_updates)
         auto_update_checkbox.toggled.connect(self.set_auto_check_updates)
-        version_card_layout.addWidget(auto_update_checkbox, 0, Qt.AlignCenter)
+        updates_card_layout.addWidget(auto_update_checkbox)
 
-        layout.addWidget(version_card)
+        updates_button_row = QHBoxLayout()
+        updates_button_row.setContentsMargins(0, 4, 0, 0)
+        updates_button_row.setSpacing(10)
 
-        body_card = QFrame()
-        body_card.setObjectName("AboutBodyCard")
-        body_layout = QVBoxLayout(body_card)
-        body_layout.setContentsMargins(16, 14, 16, 14)
-        body_layout.setSpacing(8)
+        update_button = QPushButton("检查更新")
+        update_button.setObjectName("SettingsActionButton")
+        update_button.clicked.connect(lambda: self.check_for_updates(update_button))
+        updates_button_row.addWidget(update_button)
+
+        release_button = QPushButton("打开发布页")
+        release_button.setObjectName("SettingsGhostButton")
+        release_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.latest_release_url)))
+        updates_button_row.addWidget(release_button)
+        updates_button_row.addStretch(1)
+        updates_card_layout.addLayout(updates_button_row)
+        updates_layout.addWidget(updates_card)
+        updates_layout.addStretch(1)
+
+        about_page = QWidget()
+        about_layout = QVBoxLayout(about_page)
+        about_layout.setContentsMargins(0, 0, 0, 0)
+        about_layout.setSpacing(14)
+        about_title = QLabel("关于")
+        about_title.setObjectName("SettingsPageTitle")
+        about_layout.addWidget(about_title)
+
+        about_card = QFrame()
+        about_card.setObjectName("SettingsCard")
+        about_card_layout = QVBoxLayout(about_card)
+        about_card_layout.setContentsMargins(20, 20, 20, 20)
+        about_card_layout.setSpacing(10)
+
+        logo_label = QLabel()
+        logo_label.setFixedSize(80, 80)
+        logo_label.setAlignment(Qt.AlignCenter)
+        logo_label.setPixmap(logo_pixmap(80))
+        about_card_layout.addWidget(logo_label, 0, Qt.AlignHCenter)
+
+        title_label = QLabel(APP_DISPLAY_NAME)
+        title_label.setObjectName("SettingsAboutTitle")
+        title_label.setAlignment(Qt.AlignCenter)
+        about_card_layout.addWidget(title_label)
+
+        author_label = QLabel(f"作者：{AUTHOR_NAME}")
+        author_label.setObjectName("SettingsAboutAuthor")
+        author_label.setAlignment(Qt.AlignCenter)
+        about_card_layout.addWidget(author_label)
 
         for text in (
             "轻量的定时截图小工具，用来按规则自动保存屏幕画面。",
-            "支持间隔、分钟点和指定时间截图，也支持全屏和自定义区域。",
+            "支持间隔、分钟点、指定时间，以及全屏、选区、浏览器页面截图。",
             f"单次运行最多保存 {MAX_CAPTURE_IMAGES_PER_RUN:,} 张截图，达到上限后会自动停止。",
-            "macOS 首次控制浏览器时，需要在系统弹窗中允许本软件控制对应浏览器。",
-            "关闭后会自动保留上次的设置。",
         ):
-            body_line = QLabel(text)
-            body_line.setObjectName("AboutBodyText")
-            body_line.setWordWrap(False)
-            body_layout.addWidget(body_line)
-        layout.addWidget(body_card)
+            line = QLabel(text)
+            line.setObjectName("SettingsHintText")
+            line.setWordWrap(False)
+            line.setAlignment(Qt.AlignCenter)
+            about_card_layout.addWidget(line)
 
         github_button = QPushButton()
-        github_button.setObjectName("AboutGithubButton")
-        github_button.setFixedHeight(40)
+        github_button.setObjectName("SettingsGithubButton")
+        github_button.setFixedHeight(42)
         github_button.setCursor(QCursor(Qt.PointingHandCursor))
         github_button.clicked.connect(self.open_github)
-
         github_button_layout = QHBoxLayout(github_button)
         github_button_layout.setContentsMargins(0, 0, 0, 0)
-        github_button_layout.setSpacing(7)
+        github_button_layout.setSpacing(8)
         github_button_layout.setAlignment(Qt.AlignCenter)
-
         github_icon = QLabel()
-        github_icon.setObjectName("AboutGithubIcon")
         github_icon.setFixedSize(18, 18)
         github_icon.setPixmap(github_icon_pixmap(18))
-        github_icon.setAlignment(Qt.AlignCenter)
         github_icon.setAttribute(Qt.WA_TransparentForMouseEvents)
-
         github_text = QLabel("GitHub 项目主页")
-        github_text.setObjectName("AboutGithubText")
-        github_text.setAlignment(Qt.AlignCenter)
+        github_text.setObjectName("SettingsGithubText")
         github_text.setAttribute(Qt.WA_TransparentForMouseEvents)
-
         github_button_layout.addWidget(github_icon)
         github_button_layout.addWidget(github_text)
+        about_card_layout.addWidget(github_button)
+        about_layout.addWidget(about_card)
+        about_layout.addStretch(1)
 
-        update_button = QPushButton("检查更新")
-        update_button.setObjectName("AboutUpdateButton")
-        update_button.setFixedHeight(40)
-        update_button.setCursor(QCursor(Qt.PointingHandCursor))
-        update_button.clicked.connect(lambda: self.check_for_updates(update_button))
+        self.settings_page_stack.addWidget(general_page)
+        self.settings_page_stack.addWidget(updates_page)
+        self.settings_page_stack.addWidget(about_page)
 
-        link_row = QHBoxLayout()
-        link_row.setContentsMargins(0, 0, 0, 0)
-        link_row.setSpacing(10)
-        link_row.addWidget(github_button, 1)
-        link_row.addWidget(update_button, 1)
-        layout.addLayout(link_row)
+        def switch_page(index: int):
+            self.settings_page_stack.setCurrentIndex(index)
+            for button in page_buttons:
+                button.style().unpolish(button)
+                button.style().polish(button)
+                button.update()
 
-        button_row = QHBoxLayout()
-        button_row.setContentsMargins(0, 4, 0, 0)
-        button_row.addStretch(1)
-        ok_button = QPushButton("知道了")
-        ok_button.setObjectName("AboutOkButton")
-        ok_button.setFixedSize(96, 36)
-        ok_button.clicked.connect(dialog.accept)
-        button_row.addWidget(ok_button)
-        layout.addLayout(button_row)
+        for index, button in enumerate(page_buttons):
+            button.clicked.connect(lambda _checked=False, value=index: switch_page(value))
+        page_buttons[0].setChecked(True)
+        switch_page(0)
+
+        footer = QHBoxLayout()
+        footer.setContentsMargins(0, 0, 0, 0)
+        footer.addStretch(1)
+        close_button = QPushButton("完成")
+        close_button.setObjectName("SettingsActionButton")
+        close_button.setFixedSize(96, 38)
+        close_button.clicked.connect(dialog.accept)
+        footer.addWidget(close_button)
+        body_layout.addLayout(footer)
+        content.addWidget(body, 1)
 
         dialog.setStyleSheet(
             """
-            QDialog#AboutDialog {
+            QDialog#SettingsDialog {
                 background: #f5f5f7;
                 color: #1d1d1f;
                 font-family: "PingFang SC", "SF Pro Text", sans-serif;
                 font-size: 14px;
             }
-            QLabel#AboutLogo {
+            QFrame#SettingsSidebar {
+                background: #f0f1f4;
+                border-right: 1px solid #e1e2e7;
+            }
+            QLabel#SettingsSidebarTitle {
+                color: #1d1d1f;
+                font-size: 20px;
+                font-weight: 700;
+                padding: 2px 2px 12px 2px;
+            }
+            QFrame#SettingsBody {
+                background: #f7f7fa;
+            }
+            QPushButton#SettingsPageButton {
                 background: transparent;
                 border: none;
+                border-radius: 10px;
+                color: #4b4b51;
+                font-size: 14px;
+                font-weight: 700;
+                min-height: 40px;
+                text-align: left;
+                padding: 0 14px;
             }
-            QLabel#AboutTitle {
+            QPushButton#SettingsPageButton:checked {
+                background: white;
+                color: #1d1d1f;
+                border: 1px solid #e1e2e7;
+            }
+            QPushButton#SettingsPageButton:hover {
+                background: rgba(255, 255, 255, 0.72);
+            }
+            QLabel#SettingsPageTitle {
                 color: #1d1d1f;
                 font-size: 22px;
                 font-weight: 700;
+                padding: 4px 2px 0 2px;
             }
-            QLabel#AboutVersion {
-                background: #eaeaef;
-                border-radius: 12px;
-                color: #6e6e73;
-                font-size: 12px;
-                font-weight: 600;
-                padding: 0;
-            }
-            QLabel#AboutAuthor {
-                color: #6e6e73;
-                font-size: 13px;
-                font-weight: 600;
-            }
-            QFrame#AboutVersionCard {
+            QFrame#SettingsCard {
                 background: white;
                 border: 1px solid #e4e4e8;
-                border-radius: 12px;
+                border-radius: 14px;
             }
-            QLabel#AboutVersionLine {
+            QFrame#SettingsSegment {
+                background: #ebebef;
+                border-radius: 11px;
+            }
+            QPushButton#SettingsSegmentButton {
                 background: transparent;
                 border: none;
-                color: #36363a;
+                border-radius: 9px;
+                color: #4b4b51;
+                font-weight: 700;
+                min-height: 42px;
+                padding: 0 14px;
+            }
+            QPushButton#SettingsSegmentButton:checked {
+                background: white;
+                color: #1d1d1f;
+            }
+            QLabel#SettingsHintText {
+                color: #5c5c63;
                 font-size: 13px;
-                font-weight: 650;
-                padding: 0;
             }
-            QCheckBox#AboutUpdateCheckBox {
-                background: transparent;
-                border: none;
+            QLabel#SettingsHintBox {
+                background: #f8f8fa;
+                border: 1px solid #e7e7ec;
+                border-radius: 10px;
                 color: #6e6e73;
+                font-size: 13px;
+                padding: 10px 12px;
+            }
+            QLabel#SettingsVersionLine {
+                color: #1d1d1f;
+                font-size: 14px;
+                font-weight: 650;
+            }
+            QCheckBox#SettingsCheckBox {
+                color: #5c5c63;
                 font-size: 13px;
                 spacing: 8px;
+                padding: 2px 0 4px 0;
             }
-            QFrame#AboutBodyCard {
-                background: white;
-                border: 1px solid #e4e4e8;
-                border-radius: 12px;
-            }
-            QLabel#AboutBodyText {
-                background: transparent;
-                border: none;
-                color: #36363a;
-                font-size: 13px;
-                padding: 0;
-            }
-            QPushButton#AboutGithubButton {
-                background: white;
-                border: 1px solid #e2e2e7;
-                border-radius: 10px;
-                min-height: 38px;
-                padding: 0;
-            }
-            QPushButton#AboutGithubButton:hover {
-                background: #fbfbfc;
-                border-color: #d2d2da;
-            }
-            QPushButton#AboutGithubButton:pressed {
-                background: #eeeeF3;
-            }
-            QPushButton#AboutUpdateButton {
-                background: white;
-                border: 1px solid #e2e2e7;
-                border-radius: 10px;
-                color: #1d1d1f;
-                font-size: 13px;
-                font-weight: 700;
-                min-height: 38px;
-                padding: 0;
-            }
-            QPushButton#AboutUpdateButton:hover {
-                background: #fbfbfc;
-                border-color: #d2d2da;
-            }
-            QPushButton#AboutUpdateButton:pressed {
-                background: #eeeeF3;
-            }
-            QPushButton#AboutUpdateButton:disabled {
-                background: #f2f2f5;
-                border-color: #e4e4e8;
-                color: #9a9aa1;
-            }
-            QLabel#AboutGithubIcon {
-                background: transparent;
-                border: none;
-            }
-            QLabel#AboutGithubText {
-                background: transparent;
-                border: none;
-                color: #1d1d1f;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 0;
-            }
-            QPushButton#AboutOkButton {
+            QPushButton#SettingsActionButton {
                 background: #0A84FF;
                 border: none;
                 border-radius: 10px;
                 color: white;
                 font-weight: 700;
-                min-height: 36px;
-                min-width: 96px;
-                padding: 0;
+                min-height: 38px;
+                padding: 0 18px;
             }
-            QPushButton#AboutOkButton:hover {
+            QPushButton#SettingsActionButton:hover {
                 background: #0070dd;
             }
-            QPushButton#AboutOkButton:pressed {
+            QPushButton#SettingsActionButton:pressed {
                 background: #0068cc;
+            }
+            QPushButton#SettingsActionButton:disabled {
+                background: #c8ddf6;
+                color: rgba(255, 255, 255, 0.85);
+            }
+            QPushButton#SettingsGhostButton,
+            QPushButton#SettingsGithubButton {
+                background: #f7f7fa;
+                border: 1px solid #e1e2e7;
+                border-radius: 10px;
+                color: #1d1d1f;
+                font-weight: 700;
+                min-height: 38px;
+                padding: 0 18px;
+            }
+            QPushButton#SettingsGhostButton:hover,
+            QPushButton#SettingsGithubButton:hover {
+                background: #efeff4;
+            }
+            QLabel#SettingsAboutTitle {
+                color: #1d1d1f;
+                font-size: 24px;
+                font-weight: 700;
+            }
+            QLabel#SettingsAboutAuthor,
+            QLabel#SettingsGithubText {
+                color: #6e6e73;
+                font-size: 13px;
+                font-weight: 600;
             }
             """
         )
+
+        self.refresh_close_behavior_ui()
+        self.refresh_latest_version_label()
         dialog.exec()
+
+    def on_settings_dialog_closed(self):
+        self.about_latest_version_label = None
+        self.close_behavior_hint_label = None
+        self.close_to_tray_button = None
+        self.close_to_quit_button = None
+        self.settings_page_group = None
+        self.settings_page_stack = None
 
     def open_github(self):
         QDesktopServices.openUrl(QUrl(GITHUB_URL))
@@ -1694,7 +2049,7 @@ class ScreenshotWindow(QMainWindow):
             return f"点击右上角关闭后会缩小到{target}，需要从图标里真正退出。"
         if self.close_behavior == CLOSE_BEHAVIOR_QUIT:
             return "点击右上角关闭后会直接退出软件。"
-        return "首次点击右上角关闭会先询问一次，之后会按你的选择执行。"
+        return "首次点击右上角关闭会先询问一次，之后会按你的选择作为默认方式。"
 
     def refresh_close_behavior_ui(self):
         if self.close_behavior_hint_label is not None:
@@ -1710,6 +2065,7 @@ class ScreenshotWindow(QMainWindow):
             self.close_behavior_group.setExclusive(False)
             self.close_to_tray_button.setChecked(self.close_behavior == CLOSE_BEHAVIOR_TRAY)
             self.close_to_quit_button.setChecked(self.close_behavior == CLOSE_BEHAVIOR_QUIT)
+            self.close_to_tray_button.setEnabled(self.tray_available)
             self.close_behavior_group.setExclusive(True)
         except RuntimeError:
             self.close_to_tray_button = None
@@ -1725,26 +2081,140 @@ class ScreenshotWindow(QMainWindow):
         self.refresh_close_behavior_ui()
 
     def ask_close_behavior(self) -> Optional[str]:
-        message = QMessageBox(self)
-        message.setIcon(QMessageBox.Question)
-        message.setWindowTitle("关闭主窗口")
-        message.setText("点击关闭后，你希望定格截图怎么处理？")
-        message.setInformativeText("这次的选择会记住为默认方式，后面也可以在设置里修改。")
-        tray_text = "缩小到菜单栏" if self.system_name == "Darwin" else "缩小到托盘"
-        tray_button = message.addButton(tray_text, QMessageBox.AcceptRole)
-        quit_button = message.addButton("直接退出", QMessageBox.DestructiveRole)
-        message.addButton("取消", QMessageBox.RejectRole)
-        message.exec()
-        clicked = message.clickedButton()
-        if clicked == tray_button:
-            self.set_close_behavior(CLOSE_BEHAVIOR_TRAY)
-            return CLOSE_BEHAVIOR_TRAY
-        if clicked == quit_button:
-            self.set_close_behavior(CLOSE_BEHAVIOR_QUIT)
-            return CLOSE_BEHAVIOR_QUIT
-        return None
+        dialog = QDialog(self)
+        dialog.setObjectName("CloseBehaviorDialog")
+        dialog.setWindowTitle("关闭主窗口")
+        dialog.setModal(True)
+        dialog.setFixedSize(520, 330)
+
+        selected_behavior = {"value": None}
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 22, 24, 20)
+        layout.setSpacing(16)
+
+        title = QLabel("点击关闭后，希望定格截图怎么处理？")
+        title.setObjectName("CloseDialogTitle")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        subtitle = QLabel("这次的选择会记住为默认方式，之后也可以在设置里修改。")
+        subtitle.setObjectName("CloseDialogSubtitle")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        options = QHBoxLayout()
+        options.setContentsMargins(0, 6, 0, 0)
+        options.setSpacing(12)
+
+        def choose_behavior(behavior: str):
+            selected_behavior["value"] = behavior
+            self.set_close_behavior(behavior)
+            dialog.accept()
+
+        def create_option_button(title_text: str, body_text: str, mode: str, enabled: bool = True) -> QPushButton:
+            button = QPushButton(f"{title_text}\n{body_text}")
+            button.setObjectName("CloseChoiceButton")
+            button.setCursor(QCursor(Qt.PointingHandCursor))
+            button.setEnabled(enabled)
+            button.setMinimumHeight(164)
+            button.setIcon(QIcon(close_mode_icon_pixmap(mode, 24)))
+            button.setIconSize(QSize(24, 24))
+            return button
+
+        tray_label = "缩小到菜单栏" if self.system_name == "Darwin" else "缩小到托盘"
+        tray_button = create_option_button(
+            tray_label,
+            "主窗口先收起，软件继续运行",
+            "tray",
+            enabled=self.tray_available,
+        )
+        tray_button.clicked.connect(lambda: choose_behavior(CLOSE_BEHAVIOR_TRAY))
+        options.addWidget(tray_button, 1)
+
+        quit_button = create_option_button(
+            "直接退出",
+            "关闭后软件会完全退出",
+            "quit",
+        )
+        quit_button.clicked.connect(lambda: choose_behavior(CLOSE_BEHAVIOR_QUIT))
+        options.addWidget(quit_button, 1)
+        layout.addLayout(options)
+
+        hint = QLabel("以后也可以在设置 > 通用 里重新改这个默认行为。")
+        hint.setObjectName("CloseDialogHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        cancel_button = QPushButton("取消")
+        cancel_button.setObjectName("CloseCancelButton")
+        cancel_button.setFixedSize(88, 36)
+        cancel_button.clicked.connect(dialog.reject)
+        footer.addWidget(cancel_button)
+        layout.addLayout(footer)
+
+        dialog.setStyleSheet(
+            """
+            QDialog#CloseBehaviorDialog {
+                background: #f5f5f7;
+                color: #1d1d1f;
+                font-family: "PingFang SC", "SF Pro Text", sans-serif;
+            }
+            QLabel#CloseDialogTitle {
+                color: #1d1d1f;
+                font-size: 20px;
+                font-weight: 700;
+            }
+            QLabel#CloseDialogSubtitle,
+            QLabel#CloseDialogHint {
+                color: #6e6e73;
+                font-size: 13px;
+            }
+            QPushButton#CloseChoiceButton {
+                background: white;
+                border: 1px solid #e2e2e7;
+                border-radius: 18px;
+                color: #1d1d1f;
+                font-size: 14px;
+                font-weight: 650;
+                padding: 18px 18px;
+                text-align: left;
+            }
+            QPushButton#CloseChoiceButton:hover {
+                background: #fbfbfc;
+                border-color: #c9ccd4;
+            }
+            QPushButton#CloseChoiceButton:pressed {
+                background: #efeff4;
+            }
+            QPushButton#CloseChoiceButton:disabled {
+                background: #f1f1f4;
+                color: #9e9ea5;
+                border-color: #e3e4e8;
+            }
+            QPushButton#CloseCancelButton {
+                background: #efeff4;
+                border: 1px solid #dedee4;
+                border-radius: 10px;
+                color: #4b4b51;
+                font-weight: 700;
+            }
+            QPushButton#CloseCancelButton:hover {
+                background: #e7e7ed;
+            }
+            """
+        )
+        dialog.exec()
+        return selected_behavior["value"]
 
     def setup_tray_icon(self):
+        if self.system_name == "Darwin" and PYOBJC_AVAILABLE:
+            self.tray_available = True
+            self.setup_native_status_item()
+            self.update_tray_ui()
+            return
+
         self.tray_available = QSystemTrayIcon.isSystemTrayAvailable()
         if not self.tray_available:
             self.set_close_behavior(CLOSE_BEHAVIOR_QUIT, persist=False)
@@ -1756,7 +2226,16 @@ class ScreenshotWindow(QMainWindow):
         self.tray_icon.setIcon(tray_status_icon(TRAY_STATE_IDLE))
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
 
+        menu = self.build_tray_menu()
+        if self.system_name != "Darwin":
+            self.tray_icon.setContextMenu(menu)
+        self.tray_icon.show()
+        self.update_tray_ui()
+
+    def build_tray_menu(self):
         menu = QMenu(self)
+        self.tray_menu = menu
+
         self.tray_show_action = QAction("显示主界面", self)
         self.tray_show_action.triggered.connect(self.toggle_main_window_visibility)
         menu.addAction(self.tray_show_action)
@@ -1773,10 +2252,66 @@ class ScreenshotWindow(QMainWindow):
         exit_action = QAction("退出软件", self)
         exit_action.triggered.connect(self.request_quit)
         menu.addAction(exit_action)
+        return menu
 
-        self.tray_icon.setContextMenu(menu)
-        self.tray_icon.show()
-        self.update_tray_ui()
+    def setup_native_status_item(self):
+        if not PYOBJC_AVAILABLE:
+            return
+
+        self.native_status_item = NSStatusBar.systemStatusBar().statusItemWithLength_(
+            NSVariableStatusItemLength
+        )
+        self.native_status_button = self.native_status_item.button()
+        self.native_status_target = MacStatusItemTarget.alloc().initWithWindow_(self)
+        self.build_native_status_menu()
+        self.native_status_button.setTarget_(self.native_status_target)
+        self.native_status_button.setAction_("handleStatusItemClick:")
+        self.native_status_button.sendActionOn_(
+            NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp
+        )
+
+    def build_native_status_menu(self):
+        if not PYOBJC_AVAILABLE or self.native_status_target is None:
+            return
+
+        menu = NSMenu.alloc().init()
+        menu.setAutoenablesItems_(False)
+
+        self.native_menu_show_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "显示主界面",
+            "toggleMainWindow:",
+            "",
+        )
+        self.native_menu_show_item.setTarget_(self.native_status_target)
+        menu.addItem_(self.native_menu_show_item)
+
+        self.native_menu_start_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "开始截图",
+            "startCapture:",
+            "",
+        )
+        self.native_menu_start_item.setTarget_(self.native_status_target)
+        menu.addItem_(self.native_menu_start_item)
+
+        self.native_menu_stop_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "停止截图",
+            "stopCapture:",
+            "",
+        )
+        self.native_menu_stop_item.setTarget_(self.native_status_target)
+        menu.addItem_(self.native_menu_stop_item)
+
+        menu.addItem_(NSMenuItem.separatorItem())
+
+        self.native_menu_quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "退出软件",
+            "requestQuit:",
+            "",
+        )
+        self.native_menu_quit_item.setTarget_(self.native_status_target)
+        menu.addItem_(self.native_menu_quit_item)
+
+        self.native_status_menu = menu
 
     def tray_state(self) -> str:
         if self.last_runtime_error:
@@ -1793,11 +2328,11 @@ class ScreenshotWindow(QMainWindow):
         return f"{APP_DISPLAY_NAME}：待机中"
 
     def update_tray_ui(self):
-        if self.tray_icon is None:
-            return
+        if self.tray_icon is not None:
+            self.tray_icon.setIcon(tray_status_icon(self.tray_state()))
+            self.tray_icon.setToolTip(self.tray_tooltip_text())
 
-        self.tray_icon.setIcon(tray_status_icon(self.tray_state()))
-        self.tray_icon.setToolTip(self.tray_tooltip_text())
+        self.update_native_status_item()
 
         if self.tray_show_action is not None:
             self.tray_show_action.setText("显示主界面" if self.isHidden() else "隐藏主界面")
@@ -1806,9 +2341,92 @@ class ScreenshotWindow(QMainWindow):
         if self.tray_stop_action is not None:
             self.tray_stop_action.setEnabled(self.running)
 
+    def update_native_status_item(self):
+        if self.native_status_button is None:
+            return
+
+        icon = tray_status_icon(self.tray_state(), 22)
+        pixmap = icon.pixmap(22, 22)
+        image = nsimage_from_pixmap(pixmap)
+        if image is None:
+            return
+
+        image.setTemplate_(self.tray_state() == TRAY_STATE_IDLE)
+        self.native_status_button.setImage_(image)
+        self.native_status_button.setToolTip_(self.tray_tooltip_text())
+        self.update_native_status_menu()
+
+    def update_native_status_menu(self):
+        if self.native_status_menu is None:
+            return
+
+        if self.native_menu_show_item is not None:
+            self.native_menu_show_item.setTitle_("显示主界面" if self.isHidden() else "隐藏主界面")
+            self.native_menu_show_item.setEnabled_(True)
+        if self.native_menu_start_item is not None:
+            self.native_menu_start_item.setEnabled_(not self.running)
+        if self.native_menu_stop_item is not None:
+            self.native_menu_stop_item.setEnabled_(self.running)
+        if self.native_menu_quit_item is not None:
+            self.native_menu_quit_item.setEnabled_(True)
+
     def on_tray_icon_activated(self, reason):
+        if self.native_status_item is not None:
+            return
+
+        if self.system_name == "Darwin":
+            if reason == QSystemTrayIcon.Context and self.tray_menu is not None:
+                if time.monotonic() - self.last_tray_primary_click_at < 0.28:
+                    return
+                self.tray_context_menu_timer.start(0)
+                return
+            if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+                self.last_tray_primary_click_at = time.monotonic()
+                self.tray_context_menu_timer.stop()
+                self.show_main_window()
+                return
+
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             self.toggle_main_window_visibility()
+
+    def show_tray_context_menu(self):
+        if self.native_status_item is not None:
+            self.update_tray_ui()
+            if self.native_status_menu is not None:
+                self.native_status_item.popUpStatusItemMenu_(self.native_status_menu)
+            return
+        if self.tray_menu is None:
+            return
+        if self.system_name != "Darwin":
+            return
+        if time.monotonic() - self.last_tray_primary_click_at < 0.28:
+            return
+        self.tray_menu.popup(QCursor.pos())
+
+    def eventFilter(self, obj, event):
+        if (
+            self.system_name == "Darwin"
+            and self.tray_available
+            and event is not None
+            and event.type() == QEvent.ApplicationActivate
+        ):
+            self.restore_window_from_app_activation()
+        return super().eventFilter(obj, event)
+
+    def on_application_state_changed(self, state):
+        if self.system_name != "Darwin" or not self.tray_available:
+            return
+        if state != Qt.ApplicationActive:
+            return
+        self.restore_window_from_app_activation()
+
+    def restore_window_from_app_activation(self):
+        if self.force_quit_requested:
+            return
+        if self.overlay is not None or self.preview_overlay is not None:
+            return
+        if self.isHidden():
+            QTimer.singleShot(0, self.show_main_window)
 
     def show_main_window(self):
         self.showNormal()
@@ -1826,11 +2444,24 @@ class ScreenshotWindow(QMainWindow):
         else:
             self.hide_to_tray()
 
+    def teardown_tray_icon(self):
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
+        if self.native_status_item is not None and PYOBJC_AVAILABLE:
+            NSStatusBar.systemStatusBar().removeStatusItem_(self.native_status_item)
+            self.native_status_item = None
+            self.native_status_button = None
+            self.native_status_target = None
+            self.native_status_menu = None
+            self.native_menu_show_item = None
+            self.native_menu_start_item = None
+            self.native_menu_stop_item = None
+            self.native_menu_quit_item = None
+
     def request_quit(self):
         self.force_quit_requested = True
         self.save_settings()
-        if self.tray_icon is not None:
-            self.tray_icon.hide()
+        self.teardown_tray_icon()
         self.close()
         QTimer.singleShot(0, QApplication.instance().quit)
 
@@ -2060,6 +2691,8 @@ class ScreenshotWindow(QMainWindow):
             self.close_behavior = str(close_behavior)
         else:
             self.close_behavior = CLOSE_BEHAVIOR_ASK
+        if not self.tray_available and self.close_behavior == CLOSE_BEHAVIOR_TRAY:
+            self.close_behavior = CLOSE_BEHAVIOR_QUIT
 
         active_custom = self.setting_bool("region/customized", False)
         saved_region = self.load_saved_region()
@@ -2225,8 +2858,7 @@ class ScreenshotWindow(QMainWindow):
             if behavior == CLOSE_BEHAVIOR_QUIT:
                 self.force_quit_requested = True
                 self.save_settings()
-                if self.tray_icon is not None:
-                    self.tray_icon.hide()
+                self.teardown_tray_icon()
                 event.accept()
                 QTimer.singleShot(0, QApplication.instance().quit)
                 return
