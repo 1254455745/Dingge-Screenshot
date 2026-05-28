@@ -29,6 +29,7 @@ try:
         QFont,
         QIcon,
         QPainter,
+        QPainterPath,
         QPen,
         QPixmap,
     )
@@ -176,31 +177,94 @@ def app_icon_pixmap(size: int) -> QPixmap:
     return base
 
 
+def mac_tray_template_pixmap(size: int) -> QPixmap:
+    canvas_size = max(24, size * 2)
+    pixmap = QPixmap(canvas_size, canvas_size)
+    pixmap.fill(QColor(0, 0, 0, 0))
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    stroke = max(2.4, canvas_size * 0.11)
+    pen = QPen(QColor("#ffffff"), stroke, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+
+    inset = canvas_size * 0.18
+    span = canvas_size * 0.23
+
+    path = QPainterPath()
+    path.moveTo(inset + span, inset)
+    path.lineTo(inset, inset)
+    path.lineTo(inset, inset + span)
+
+    path.moveTo(canvas_size - inset - span, inset)
+    path.lineTo(canvas_size - inset, inset)
+    path.lineTo(canvas_size - inset, inset + span)
+
+    path.moveTo(inset, canvas_size - inset - span)
+    path.lineTo(inset, canvas_size - inset)
+    path.lineTo(inset + span, canvas_size - inset)
+
+    path.moveTo(canvas_size - inset - span, canvas_size - inset)
+    path.lineTo(canvas_size - inset, canvas_size - inset)
+    path.lineTo(canvas_size - inset, canvas_size - inset - span)
+    painter.drawPath(path)
+
+    ring_rect = QRect(
+        round(canvas_size * 0.33),
+        round(canvas_size * 0.33),
+        round(canvas_size * 0.34),
+        round(canvas_size * 0.34),
+    )
+    painter.drawEllipse(ring_rect)
+
+    painter.setBrush(QColor("#ffffff"))
+    painter.setPen(Qt.NoPen)
+    dot_size = max(4, round(canvas_size * 0.12))
+    dot_offset = round(canvas_size * 0.05)
+    painter.drawEllipse(
+        round(canvas_size * 0.62),
+        round(canvas_size * 0.22) - dot_offset // 2,
+        dot_size,
+        dot_size,
+    )
+    painter.end()
+
+    return pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+
 def tray_status_icon(state: str, size: int = 22) -> QIcon:
-    pixmap = app_icon_pixmap(size)
-    if pixmap.isNull():
-        pixmap = QPixmap(size, size)
-        pixmap.fill(QColor(0, 0, 0, 0))
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setBrush(QColor("#f5f5f7"))
-        painter.setPen(QPen(QColor("#5f6368"), 1.4))
-        painter.drawEllipse(2, 2, size - 4, size - 4)
-        painter.end()
+    if platform.system() == "Darwin":
+        pixmap = mac_tray_template_pixmap(size)
+    else:
+        pixmap = app_icon_pixmap(size)
+        if pixmap.isNull():
+            pixmap = QPixmap(size, size)
+            pixmap.fill(QColor(0, 0, 0, 0))
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setBrush(QColor("#f5f5f7"))
+            painter.setPen(QPen(QColor("#5f6368"), 1.4))
+            painter.drawEllipse(2, 2, size - 4, size - 4)
+            painter.end()
 
     if state != TRAY_STATE_IDLE:
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
         color = QColor("#30d158") if state == TRAY_STATE_ACTIVE else QColor("#ff3b30")
-        badge_size = max(7, round(size * 0.34))
-        badge_x = size - badge_size - 2
-        badge_y = size - badge_size - 2
+        badge_size = max(7, round(size * 0.32))
+        badge_x = size - badge_size - 1
+        badge_y = size - badge_size - 1
         painter.setBrush(color)
         painter.setPen(QPen(QColor("white"), 1.6))
         painter.drawEllipse(badge_x, badge_y, badge_size, badge_size)
         painter.end()
 
-    return QIcon(pixmap)
+    icon = QIcon(pixmap)
+    if platform.system() == "Darwin" and state == TRAY_STATE_IDLE:
+        icon.setIsMask(True)
+    return icon
 
 
 def github_icon_pixmap(size: int) -> QPixmap:
