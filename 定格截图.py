@@ -22,6 +22,7 @@ except ImportError:
 try:
     from PySide6.QtCore import QByteArray, QPoint, QRect, QSettings, QSize, QTimer, Qt, QUrl, Signal
     from PySide6.QtGui import (
+        QAction,
         QColor,
         QCursor,
         QDesktopServices,
@@ -43,10 +44,12 @@ try:
         QHBoxLayout,
         QLabel,
         QMainWindow,
+        QMenu,
         QMessageBox,
         QPushButton,
         QAbstractScrollArea,
         QScrollArea,
+        QSystemTrayIcon,
         QSizePolicy,
         QDoubleSpinBox,
         QStackedWidget,
@@ -117,6 +120,14 @@ CAPTURE_TARGET_FULLSCREEN = 0
 CAPTURE_TARGET_CUSTOM = 1
 CAPTURE_TARGET_BROWSER = 2
 
+CLOSE_BEHAVIOR_ASK = "ask"
+CLOSE_BEHAVIOR_TRAY = "tray"
+CLOSE_BEHAVIOR_QUIT = "quit"
+
+TRAY_STATE_IDLE = "idle"
+TRAY_STATE_ACTIVE = "active"
+TRAY_STATE_ERROR = "error"
+
 BROWSER_APPS = (
     ("Google Chrome", "Chrome"),
     ("Safari", "Safari"),
@@ -163,6 +174,33 @@ def app_icon_pixmap(size: int) -> QPixmap:
     painter.drawPixmap(x, y, logo)
     painter.end()
     return base
+
+
+def tray_status_icon(state: str, size: int = 22) -> QIcon:
+    pixmap = app_icon_pixmap(size)
+    if pixmap.isNull():
+        pixmap = QPixmap(size, size)
+        pixmap.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor("#f5f5f7"))
+        painter.setPen(QPen(QColor("#5f6368"), 1.4))
+        painter.drawEllipse(2, 2, size - 4, size - 4)
+        painter.end()
+
+    if state != TRAY_STATE_IDLE:
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        color = QColor("#30d158") if state == TRAY_STATE_ACTIVE else QColor("#ff3b30")
+        badge_size = max(7, round(size * 0.34))
+        badge_x = size - badge_size - 2
+        badge_y = size - badge_size - 2
+        painter.setBrush(color)
+        painter.setPen(QPen(QColor("white"), 1.6))
+        painter.drawEllipse(badge_x, badge_y, badge_size, badge_size)
+        painter.end()
+
+    return QIcon(pixmap)
 
 
 def github_icon_pixmap(size: int) -> QPixmap:
@@ -473,6 +511,17 @@ class ScreenshotWindow(QMainWindow):
         self.latest_release_tag = ""
         self.latest_release_url = GITHUB_RELEASES_URL
         self.about_latest_version_label: Optional[QLabel] = None
+        self.tray_icon: Optional[QSystemTrayIcon] = None
+        self.tray_show_action: Optional[QAction] = None
+        self.tray_start_action: Optional[QAction] = None
+        self.tray_stop_action: Optional[QAction] = None
+        self.close_behavior = CLOSE_BEHAVIOR_ASK
+        self.close_behavior_hint_label: Optional[QLabel] = None
+        self.close_to_tray_button: Optional[QPushButton] = None
+        self.close_to_quit_button: Optional[QPushButton] = None
+        self.force_quit_requested = False
+        self.tray_available = False
+        self.last_runtime_error = ""
         self.capture_target = CAPTURE_TARGET_FULLSCREEN
         self.region_customized = False
         self.region = self.default_region()
@@ -486,6 +535,7 @@ class ScreenshotWindow(QMainWindow):
 
         self.build_ui()
         self.apply_styles()
+        self.setup_tray_icon()
         has_saved_times = self.settings.contains("daily/times")
         self.load_settings()
         if not has_saved_times:
@@ -561,6 +611,7 @@ class ScreenshotWindow(QMainWindow):
         settings_layout.addLayout(self.build_path_section())
         settings_layout.addLayout(self.build_mode_section(), 1)
         settings_layout.addLayout(self.build_region_section())
+        settings_layout.addLayout(self.build_window_section())
 
         side = QFrame()
         side.setObjectName("SidePanel")
@@ -925,6 +976,43 @@ class ScreenshotWindow(QMainWindow):
         self.reselect_region_button.clicked.connect(self.select_region)
         region_value_layout.addWidget(self.reselect_region_button)
         layout.addWidget(region_value_row)
+        return layout
+
+    def build_window_section(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        label = self.make_label("关闭行为")
+        label.setFixedHeight(SECTION_LABEL_HEIGHT)
+        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        layout.addWidget(label)
+
+        segment = QFrame()
+        segment.setObjectName("Segment")
+        segment_layout = QHBoxLayout(segment)
+        segment_layout.setContentsMargins(3, 3, 3, 3)
+        segment_layout.setSpacing(3)
+
+        self.close_to_tray_button = QPushButton("点叉最小化")
+        self.close_to_quit_button = QPushButton("点叉退出")
+        self.close_behavior_group = QButtonGroup(self)
+        self.close_behavior_group.setExclusive(True)
+        self.close_behavior_group.addButton(self.close_to_tray_button, 0)
+        self.close_behavior_group.addButton(self.close_to_quit_button, 1)
+        for button in (self.close_to_tray_button, self.close_to_quit_button):
+            button.setCheckable(True)
+            button.setObjectName("SegmentButton")
+            segment_layout.addWidget(button)
+
+        self.close_to_tray_button.clicked.connect(lambda: self.set_close_behavior(CLOSE_BEHAVIOR_TRAY))
+        self.close_to_quit_button.clicked.connect(lambda: self.set_close_behavior(CLOSE_BEHAVIOR_QUIT))
+        layout.addWidget(segment)
+
+        self.close_behavior_hint_label = QLabel()
+        self.close_behavior_hint_label.setObjectName("InlineHint")
+        self.close_behavior_hint_label.setWordWrap(True)
+        layout.addWidget(self.close_behavior_hint_label)
         return layout
 
     def apply_styles(self):
@@ -1536,6 +1624,152 @@ class ScreenshotWindow(QMainWindow):
         except RuntimeError:
             self.about_latest_version_label = None
 
+    def close_behavior_text(self) -> str:
+        if self.close_behavior == CLOSE_BEHAVIOR_TRAY:
+            target = "菜单栏图标" if self.system_name == "Darwin" else "托盘图标"
+            return f"点击右上角关闭后会缩小到{target}，需要从图标里真正退出。"
+        if self.close_behavior == CLOSE_BEHAVIOR_QUIT:
+            return "点击右上角关闭后会直接退出软件。"
+        return "首次点击右上角关闭会先询问一次，之后会按你的选择执行。"
+
+    def refresh_close_behavior_ui(self):
+        if self.close_behavior_hint_label is not None:
+            try:
+                self.close_behavior_hint_label.setText(self.close_behavior_text())
+            except RuntimeError:
+                self.close_behavior_hint_label = None
+
+        if self.close_to_tray_button is None or self.close_to_quit_button is None:
+            return
+
+        try:
+            self.close_behavior_group.setExclusive(False)
+            self.close_to_tray_button.setChecked(self.close_behavior == CLOSE_BEHAVIOR_TRAY)
+            self.close_to_quit_button.setChecked(self.close_behavior == CLOSE_BEHAVIOR_QUIT)
+            self.close_behavior_group.setExclusive(True)
+        except RuntimeError:
+            self.close_to_tray_button = None
+            self.close_to_quit_button = None
+
+    def set_close_behavior(self, behavior: str, persist: bool = True):
+        if behavior not in {CLOSE_BEHAVIOR_ASK, CLOSE_BEHAVIOR_TRAY, CLOSE_BEHAVIOR_QUIT}:
+            return
+        self.close_behavior = behavior
+        if persist:
+            self.settings.setValue("window/close_behavior", "" if behavior == CLOSE_BEHAVIOR_ASK else behavior)
+            self.settings.sync()
+        self.refresh_close_behavior_ui()
+
+    def ask_close_behavior(self) -> Optional[str]:
+        message = QMessageBox(self)
+        message.setIcon(QMessageBox.Question)
+        message.setWindowTitle("关闭主窗口")
+        message.setText("点击关闭后，你希望定格截图怎么处理？")
+        message.setInformativeText("这次的选择会记住为默认方式，后面也可以在设置里修改。")
+        tray_text = "缩小到菜单栏" if self.system_name == "Darwin" else "缩小到托盘"
+        tray_button = message.addButton(tray_text, QMessageBox.AcceptRole)
+        quit_button = message.addButton("直接退出", QMessageBox.DestructiveRole)
+        message.addButton("取消", QMessageBox.RejectRole)
+        message.exec()
+        clicked = message.clickedButton()
+        if clicked == tray_button:
+            self.set_close_behavior(CLOSE_BEHAVIOR_TRAY)
+            return CLOSE_BEHAVIOR_TRAY
+        if clicked == quit_button:
+            self.set_close_behavior(CLOSE_BEHAVIOR_QUIT)
+            return CLOSE_BEHAVIOR_QUIT
+        return None
+
+    def setup_tray_icon(self):
+        self.tray_available = QSystemTrayIcon.isSystemTrayAvailable()
+        if not self.tray_available:
+            self.set_close_behavior(CLOSE_BEHAVIOR_QUIT, persist=False)
+            if self.close_to_tray_button is not None:
+                self.close_to_tray_button.setEnabled(False)
+            return
+
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(tray_status_icon(TRAY_STATE_IDLE))
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+
+        menu = QMenu(self)
+        self.tray_show_action = QAction("显示主界面", self)
+        self.tray_show_action.triggered.connect(self.toggle_main_window_visibility)
+        menu.addAction(self.tray_show_action)
+
+        self.tray_start_action = QAction("开始截图", self)
+        self.tray_start_action.triggered.connect(self.start_capture)
+        menu.addAction(self.tray_start_action)
+
+        self.tray_stop_action = QAction("停止截图", self)
+        self.tray_stop_action.triggered.connect(self.stop_capture)
+        menu.addAction(self.tray_stop_action)
+
+        menu.addSeparator()
+        exit_action = QAction("退出软件", self)
+        exit_action.triggered.connect(self.request_quit)
+        menu.addAction(exit_action)
+
+        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.show()
+        self.update_tray_ui()
+
+    def tray_state(self) -> str:
+        if self.last_runtime_error:
+            return TRAY_STATE_ERROR
+        if self.running:
+            return TRAY_STATE_ACTIVE
+        return TRAY_STATE_IDLE
+
+    def tray_tooltip_text(self) -> str:
+        if self.last_runtime_error:
+            return f"{APP_DISPLAY_NAME}：运行失败"
+        if self.running:
+            return f"{APP_DISPLAY_NAME}：截图任务运行中"
+        return f"{APP_DISPLAY_NAME}：待机中"
+
+    def update_tray_ui(self):
+        if self.tray_icon is None:
+            return
+
+        self.tray_icon.setIcon(tray_status_icon(self.tray_state()))
+        self.tray_icon.setToolTip(self.tray_tooltip_text())
+
+        if self.tray_show_action is not None:
+            self.tray_show_action.setText("显示主界面" if self.isHidden() else "隐藏主界面")
+        if self.tray_start_action is not None:
+            self.tray_start_action.setEnabled(not self.running)
+        if self.tray_stop_action is not None:
+            self.tray_stop_action.setEnabled(self.running)
+
+    def on_tray_icon_activated(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.toggle_main_window_visibility()
+
+    def show_main_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.update_tray_ui()
+
+    def hide_to_tray(self):
+        self.hide()
+        self.update_tray_ui()
+
+    def toggle_main_window_visibility(self):
+        if self.isHidden():
+            self.show_main_window()
+        else:
+            self.hide_to_tray()
+
+    def request_quit(self):
+        self.force_quit_requested = True
+        self.save_settings()
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
+        self.close()
+        QTimer.singleShot(0, QApplication.instance().quit)
+
     def set_auto_check_updates(self, checked: bool):
         self.auto_check_updates = checked
         self.settings.setValue("updates/auto_check", checked)
@@ -1658,6 +1892,14 @@ class ScreenshotWindow(QMainWindow):
         if hasattr(self, "time_list_layout"):
             self.reflow_dynamic_layouts()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self.update_tray_ui)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        QTimer.singleShot(0, self.update_tray_ui)
+
     def reflow_dynamic_layouts(self):
         if hasattr(self, "time_list_layout"):
             self.render_time_chips(force=False)
@@ -1749,6 +1991,11 @@ class ScreenshotWindow(QMainWindow):
         self.daily_times = self.load_saved_times()
         self.render_time_chips()
         self.auto_check_updates = self.setting_bool("updates/auto_check", True)
+        close_behavior = self.settings.value("window/close_behavior", "")
+        if close_behavior in (CLOSE_BEHAVIOR_TRAY, CLOSE_BEHAVIOR_QUIT):
+            self.close_behavior = str(close_behavior)
+        else:
+            self.close_behavior = CLOSE_BEHAVIOR_ASK
 
         active_custom = self.setting_bool("region/customized", False)
         saved_region = self.load_saved_region()
@@ -1782,6 +2029,8 @@ class ScreenshotWindow(QMainWindow):
         self.refresh_region()
         self.refresh_interval_preview()
         self.refresh_minute_preview()
+        self.refresh_close_behavior_ui()
+        self.update_tray_ui()
 
     def save_settings(self):
         unit_button = self.unit_group.checkedButton()
@@ -1802,6 +2051,7 @@ class ScreenshotWindow(QMainWindow):
         self.settings.setValue("region/width", self.region.width)
         self.settings.setValue("region/height", self.region.height)
         self.settings.setValue("updates/auto_check", self.auto_check_updates)
+        self.settings.setValue("window/close_behavior", "" if self.close_behavior == CLOSE_BEHAVIOR_ASK else self.close_behavior)
         if self.custom_region is not None:
             self.settings.setValue("region/custom_x", self.custom_region.x)
             self.settings.setValue("region/custom_y", self.custom_region.y)
@@ -1893,8 +2143,34 @@ class ScreenshotWindow(QMainWindow):
         return region
 
     def closeEvent(self, event):
+        if self.force_quit_requested:
+            self.save_settings()
+            event.accept()
+            return
+
+        if self.tray_available:
+            behavior = self.close_behavior
+            if behavior == CLOSE_BEHAVIOR_ASK:
+                behavior = self.ask_close_behavior()
+
+            if behavior == CLOSE_BEHAVIOR_TRAY:
+                self.save_settings()
+                event.ignore()
+                self.hide_to_tray()
+                return
+            if behavior == CLOSE_BEHAVIOR_QUIT:
+                self.force_quit_requested = True
+                self.save_settings()
+                if self.tray_icon is not None:
+                    self.tray_icon.hide()
+                event.accept()
+                QTimer.singleShot(0, QApplication.instance().quit)
+                return
+            event.ignore()
+            return
+
         self.save_settings()
-        super().closeEvent(event)
+        event.accept()
 
     def refresh_path(self):
         self.path_value.setText(f"{self.save_dir}\n按日期自动保存到 {self.dated_save_dir().name}/")
@@ -1945,6 +2221,7 @@ class ScreenshotWindow(QMainWindow):
             self.note_label.setText(
                 f"下一次截图\n{self.next_capture_at.strftime('%Y-%m-%d %H:%M:%S')}"
             )
+            self.update_tray_ui()
             return
 
         if self.mode_group.checkedId() == 0:
@@ -1963,6 +2240,7 @@ class ScreenshotWindow(QMainWindow):
             self.note_label.setText("定时截图\n" + "、".join(self.daily_times))
         else:
             self.note_label.setText("请先添加至少一个时间点")
+        self.update_tray_ui()
 
     def choose_directory(self):
         if self.running:
@@ -2747,7 +3025,17 @@ class ScreenshotWindow(QMainWindow):
         if title:
             text += f"\n{title}"
         self.note_label.setText(text)
+        self.update_tray_ui()
         QApplication.processEvents()
+
+    def restore_window_after_background_capture(self, was_hidden: bool):
+        if was_hidden:
+            self.update_tray_ui()
+            return
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.update_tray_ui()
 
     def save_browser_page_screenshots(self, timestamp: str, max_count: int, output_dir: Path) -> list[CaptureRecord]:
         if max_count <= 0:
@@ -2764,6 +3052,7 @@ class ScreenshotWindow(QMainWindow):
 
         records: list[CaptureRecord] = []
         total_count = min(len(tabs), max_count)
+        was_hidden = self.isHidden()
         try:
             for index, tab in enumerate(tabs, start=1):
                 if len(records) >= max_count:
@@ -2791,9 +3080,7 @@ class ScreenshotWindow(QMainWindow):
                     )
                 )
         finally:
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
+            self.restore_window_after_background_capture(was_hidden)
 
         return records
 
@@ -2890,6 +3177,7 @@ class ScreenshotWindow(QMainWindow):
         if not browser_windows:
             raise RuntimeError("没有检测到已打开的浏览器窗口。请先让浏览器保持打开状态。")
 
+        was_hidden = self.isHidden()
         self.hide()
         QApplication.processEvents()
         time.sleep(0.35)
@@ -2947,9 +3235,7 @@ class ScreenshotWindow(QMainWindow):
                     if self.windows_window_title(hwnd) == first_title and len(seen_titles) > 0:
                         break
         finally:
-            self.showNormal()
-            self.raise_()
-            self.activateWindow()
+            self.restore_window_after_background_capture(was_hidden)
 
         return records
 
@@ -2977,18 +3263,21 @@ class ScreenshotWindow(QMainWindow):
 
         self.dated_save_dir().mkdir(parents=True, exist_ok=True)
         self.running = True
+        self.last_runtime_error = ""
         self.capture_count = 0
         self.count_card.set_value("0")
         self.status_card.set_value("等待执行")
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.set_capture_options_locked(True)
+        self.update_tray_ui()
         self.schedule_next_capture()
 
     def stop_capture(self):
         self.running = False
         self.next_capture_at = None
         self.timer.stop()
+        self.last_runtime_error = ""
         self.status_card.set_value("已停止")
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
@@ -3054,11 +3343,13 @@ class ScreenshotWindow(QMainWindow):
             self.running = False
             self.timer.stop()
             self.next_capture_at = None
+            self.last_runtime_error = str(exc)
             self.status_card.set_value("运行失败")
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
             self.set_capture_options_locked(False)
             self.note_label.setText(f"截图失败：{exc}")
+            self.update_tray_ui()
             QMessageBox.critical(
                 self,
                 "截图失败",
@@ -3072,11 +3363,13 @@ class ScreenshotWindow(QMainWindow):
             self.running = False
             self.timer.stop()
             self.next_capture_at = None
+            self.last_runtime_error = ""
             self.status_card.set_value("已完成")
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
             self.set_capture_options_locked(False)
             self.note_label.setText(f"已达到单次 {MAX_CAPTURE_IMAGES_PER_RUN:,} 张上限，截图已自动停止")
+            self.update_tray_ui()
             return
 
         self.schedule_next_capture()
@@ -3120,6 +3413,7 @@ def main():
     app = QApplication(sys.argv)
     app.setOrganizationName(SETTINGS_ORGANIZATION)
     app.setApplicationName(APP_DISPLAY_NAME)
+    app.setQuitOnLastWindowClosed(False)
     if LOGO_PATH.exists():
         app.setWindowIcon(QIcon(app_icon_pixmap(256)))
     window = ScreenshotWindow()
