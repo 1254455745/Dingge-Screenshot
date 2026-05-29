@@ -92,10 +92,13 @@ if platform.system() == "Darwin":
         import objc
         from AppKit import (
             NSApp,
+            NSApplicationActivationPolicyAccessory,
+            NSApplicationActivationPolicyRegular,
+            NSImageOnly,
+            NSImageScaleProportionallyDown,
             NSMenu,
             NSMenuItem,
             NSStatusBar,
-            NSVariableStatusItemLength,
             NSEventMaskLeftMouseUp,
             NSEventMaskRightMouseUp,
             NSEventTypeRightMouseUp,
@@ -131,8 +134,7 @@ def default_save_dir() -> Path:
 
 APP_DIR = app_base_dir()
 LOGO_PATH = APP_DIR / "assets" / "定格截图logo.png"
-STATUSBAR_TEMPLATE_SVG_PATH = APP_DIR / "assets" / "statusbar-template.svg"
-STATUSBAR_TEMPLATE_SOURCE_PATH = APP_DIR / "assets" / "statusbar-template-source.png"
+STATUSBAR_ICON_SVG_PATH = APP_DIR / "assets" / "statusbar-icon.svg"
 GITHUB_URL = "https://github.com/1254455745/Dingge-Screenshot"
 GITHUB_RELEASES_URL = f"{GITHUB_URL}/releases"
 GITHUB_LATEST_RELEASE_URL = f"{GITHUB_RELEASES_URL}/latest"
@@ -154,6 +156,8 @@ MIN_TIME_ROWS = 2
 RULE_BUTTON_HEIGHT = 42
 INTERVAL_CONTROL_WIDTH = 130
 UNIT_BUTTON_WIDTH = 68
+MAC_STATUS_ICON_SIZE = 16
+MAC_STATUS_ITEM_LENGTH = 22
 
 CAPTURE_TARGET_FULLSCREEN = 0
 CAPTURE_TARGET_CUSTOM = 1
@@ -220,7 +224,7 @@ def image_based_template_pixmap(source_path: Path, size: int) -> QPixmap:
     if source.isNull():
         return QPixmap()
 
-    normalized = normalize_template_image(source.toImage())
+    normalized = trim_transparent_image(normalize_template_image(source.toImage()))
     return QPixmap.fromImage(normalized).scaled(
         size,
         size,
@@ -253,6 +257,25 @@ def normalize_template_image(image: QImage) -> QImage:
     return normalized
 
 
+def trim_transparent_image(image: QImage) -> QImage:
+    left = image.width()
+    top = image.height()
+    right = -1
+    bottom = -1
+
+    for y in range(image.height()):
+        for x in range(image.width()):
+            if image.pixelColor(x, y).alpha() > 0:
+                left = min(left, x)
+                top = min(top, y)
+                right = max(right, x)
+                bottom = max(bottom, y)
+
+    if right < left or bottom < top:
+        return image
+    return image.copy(left, top, right - left + 1, bottom - top + 1)
+
+
 def svg_file_pixmap(source_path: Path, size: int) -> QPixmap:
     if not source_path.exists():
         return QPixmap()
@@ -269,20 +292,23 @@ def svg_file_pixmap(source_path: Path, size: int) -> QPixmap:
     renderer.render(painter)
     painter.end()
 
-    normalized = QPixmap.fromImage(normalize_template_image(pixmap.toImage()))
+    normalized_image = normalize_template_image(pixmap.toImage())
+    normalized = QPixmap.fromImage(
+        normalized_image.scaled(
+            render_size,
+            render_size,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+    )
     if platform.system() == "Darwin":
         normalized.setDevicePixelRatio(2.0)
     return normalized
 
 
 def mac_tray_template_pixmap(size: int) -> QPixmap:
-    if STATUSBAR_TEMPLATE_SVG_PATH.exists():
-        pixmap = svg_file_pixmap(STATUSBAR_TEMPLATE_SVG_PATH, size)
-        if not pixmap.isNull():
-            return pixmap
-
-    if STATUSBAR_TEMPLATE_SOURCE_PATH.exists():
-        pixmap = image_based_template_pixmap(STATUSBAR_TEMPLATE_SOURCE_PATH, size)
+    if STATUSBAR_ICON_SVG_PATH.exists():
+        pixmap = svg_file_pixmap(STATUSBAR_ICON_SVG_PATH, size)
         if not pixmap.isNull():
             return pixmap
 
@@ -391,8 +417,10 @@ def settings_icon_pixmap(size: int) -> QPixmap:
     return svg_icon_pixmap(
         size,
         """
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-          <path fill="#6e6e73" d="M10.325 4.317a1.724 1.724 0 0 1 3.35 0a1.724 1.724 0 0 0 2.573 1.066a1.724 1.724 0 0 1 2.898 1.675a1.724 1.724 0 0 0 .849 2.437a1.724 1.724 0 0 1 0 3.01a1.724 1.724 0 0 0-.848 2.437a1.724 1.724 0 0 1-2.898 1.675a1.724 1.724 0 0 0-2.573 1.066a1.724 1.724 0 0 1-3.35 0a1.724 1.724 0 0 0-2.573-1.066a1.724 1.724 0 0 1-2.898-1.675a1.724 1.724 0 0 0-.848-2.437a1.724 1.724 0 0 1 0-3.01a1.724 1.724 0 0 0 .848-2.437a1.724 1.724 0 0 1 2.898-1.675a1.724 1.724 0 0 0 2.573-1.066ZM12 15.25A3.25 3.25 0 1 0 12 8.75a3.25 3.25 0 0 0 0 6.5Z"/>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+          <path d="M12.22 2h-.44a2 2 0 0 0-1.94 1.5l-.24.9a2 2 0 0 1-2.45 1.41l-.9-.24a2 2 0 0 0-2.38 1l-.22.38a2 2 0 0 0 .73 2.73l.76.44a2 2 0 0 1 0 3.46l-.76.44a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.38 1l.9-.24a2 2 0 0 1 2.45 1.41l.24.9a2 2 0 0 0 1.94 1.5h.44a2 2 0 0 0 1.94-1.5l.24-.9a2 2 0 0 1 2.45-1.41l.9.24a2 2 0 0 0 2.38-1l.22-.38a2 2 0 0 0-.73-2.73l-.76-.44a2 2 0 0 1 0-3.46l.76-.44a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.38-1l-.9.24a2 2 0 0 1-2.45-1.41l-.24-.9A2 2 0 0 0 12.22 2Z"
+                stroke="#6e6e73" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="12" cy="12" r="3" stroke="#6e6e73" stroke-width="1.65"/>
         </svg>
         """,
     )
@@ -487,6 +515,12 @@ def nsimage_from_pixmap(pixmap: QPixmap):
 
     image_data = NSData.dataWithBytes_length_(byte_array.data(), byte_array.size())
     return NSImage.alloc().initWithData_(image_data)
+
+
+def mac_application_icon_image():
+    if not PYOBJC_AVAILABLE:
+        return None
+    return nsimage_from_pixmap(app_icon_pixmap(256))
 
 
 def version_parts(version: str) -> list[int]:
@@ -852,6 +886,7 @@ class ScreenshotWindow(QMainWindow):
         if app is not None:
             app.applicationStateChanged.connect(self.on_application_state_changed)
             app.installEventFilter(self)
+        self.sync_mac_application_icon()
 
         self.build_ui()
         self.apply_styles()
@@ -2259,11 +2294,15 @@ class ScreenshotWindow(QMainWindow):
             return
 
         self.native_status_item = NSStatusBar.systemStatusBar().statusItemWithLength_(
-            NSVariableStatusItemLength
+            MAC_STATUS_ITEM_LENGTH
         )
         self.native_status_button = self.native_status_item.button()
         self.native_status_target = MacStatusItemTarget.alloc().initWithWindow_(self)
         self.build_native_status_menu()
+        self.native_status_button.setTitle_("")
+        self.native_status_button.setBordered_(False)
+        self.native_status_button.setImagePosition_(NSImageOnly)
+        self.native_status_button.setImageScaling_(NSImageScaleProportionallyDown)
         self.native_status_button.setTarget_(self.native_status_target)
         self.native_status_button.setAction_("handleStatusItemClick:")
         self.native_status_button.sendActionOn_(
@@ -2345,8 +2384,8 @@ class ScreenshotWindow(QMainWindow):
         if self.native_status_button is None:
             return
 
-        icon = tray_status_icon(self.tray_state(), 22)
-        pixmap = icon.pixmap(22, 22)
+        icon = tray_status_icon(self.tray_state(), MAC_STATUS_ICON_SIZE)
+        pixmap = icon.pixmap(MAC_STATUS_ICON_SIZE, MAC_STATUS_ICON_SIZE)
         image = nsimage_from_pixmap(pixmap)
         if image is None:
             return
@@ -2428,14 +2467,35 @@ class ScreenshotWindow(QMainWindow):
         if self.isHidden():
             QTimer.singleShot(0, self.show_main_window)
 
+    def set_mac_activation_policy(self, show_in_dock: bool):
+        if self.system_name != "Darwin" or not PYOBJC_AVAILABLE:
+            return
+        NSApp.setActivationPolicy_(
+            NSApplicationActivationPolicyRegular
+            if show_in_dock
+            else NSApplicationActivationPolicyAccessory
+        )
+        self.sync_mac_application_icon()
+
+    def sync_mac_application_icon(self):
+        if self.system_name != "Darwin" or not PYOBJC_AVAILABLE:
+            return
+        image = mac_application_icon_image()
+        if image is not None:
+            NSApp.setApplicationIconImage_(image)
+
     def show_main_window(self):
+        self.set_mac_activation_policy(True)
         self.showNormal()
         self.raise_()
         self.activateWindow()
+        if self.system_name == "Darwin" and PYOBJC_AVAILABLE:
+            NSApp.activateIgnoringOtherApps_(True)
         self.update_tray_ui()
 
     def hide_to_tray(self):
         self.hide()
+        self.set_mac_activation_policy(False)
         self.update_tray_ui()
 
     def toggle_main_window_visibility(self):

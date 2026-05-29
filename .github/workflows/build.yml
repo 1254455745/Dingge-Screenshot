@@ -45,7 +45,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: dingge-screenshot-windows
-          path: dist/定格截图-Windows.zip
+          path: |
+            dist/定格截图-Windows.zip
+            dist/定格截图/定格截图.exe
 
   release:
     name: Publish release
@@ -76,7 +78,7 @@ jobs:
 
             ### 下载
             - macOS 用户下载 `定格截图-macOS.dmg` 或 `定格截图-macOS.zip`
-            - Windows 用户下载 `定格截图-Windows.zip`
+            - Windows 用户下载 `定格截图.exe` 或 `定格截图-Windows.zip`
           append_body: true
           fail_on_unmatched_files: true
           files: release-assets/**/*
