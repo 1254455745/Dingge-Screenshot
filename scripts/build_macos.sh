@@ -15,6 +15,18 @@ fi
 
 "$PYTHON_BIN" -m pip install -r requirements.txt -r requirements-build.txt
 
+APP_VERSION="$("$PYTHON_BIN" - <<'PY'
+from pathlib import Path
+import re
+
+text = Path("定格截图.py").read_text(encoding="utf-8")
+match = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', text)
+if not match:
+    raise SystemExit("APP_VERSION not found")
+print(match.group(1))
+PY
+)"
+
 "$PYTHON_BIN" scripts/create_dmg_background.py
 
 rm -rf build dist
@@ -29,11 +41,11 @@ rm -rf build dist
   "定格截图.py"
 
 codesign --force --deep --sign - "dist/定格截图.app"
-ditto -c -k --sequesterRsrc --keepParent "dist/定格截图.app" "dist/定格截图-macOS.zip"
+ditto -c -k --sequesterRsrc --keepParent "dist/定格截图.app" "dist/定格截图-v${APP_VERSION}-macOS.zip"
 
 DMG_ROOT="dist/dmg-root"
-DMG_RW="dist/定格截图-macOS-rw.dmg"
-DMG_FINAL="dist/定格截图-macOS.dmg"
+DMG_RW="dist/定格截图-v${APP_VERSION}-macOS-rw.dmg"
+DMG_FINAL="dist/定格截图-v${APP_VERSION}-macOS.dmg"
 rm -rf "$DMG_ROOT"
 mkdir -p "$DMG_ROOT"
 mkdir -p "$DMG_ROOT/.background"
@@ -41,7 +53,7 @@ cp -R "dist/定格截图.app" "$DMG_ROOT/"
 ln -s /Applications "$DMG_ROOT/Applications"
 cp "assets/dmg-background.png" "$DMG_ROOT/.background/"
 
-hdiutil create -volname "定格截图" -srcfolder "$DMG_ROOT" -ov -format UDRW -fs HFS+ "$DMG_RW"
+hdiutil create -volname "定格截图 v${APP_VERSION}" -srcfolder "$DMG_ROOT" -ov -format UDRW -fs HFS+ "$DMG_RW"
 
 MOUNT_POINT=""
 cleanup_dmg_mount() {
@@ -57,7 +69,7 @@ sleep 1
 
 osascript <<APPLESCRIPT
 tell application "Finder"
-  tell disk "定格截图"
+  tell disk "定格截图 v${APP_VERSION}"
     open
     set current view of container window to icon view
     set toolbar visible of container window to false
@@ -88,5 +100,5 @@ rm -f "$DMG_RW"
 rm -rf "$DMG_ROOT"
 
 echo "macOS app: dist/定格截图.app"
-echo "macOS zip: dist/定格截图-macOS.zip"
+echo "macOS zip: dist/定格截图-v${APP_VERSION}-macOS.zip"
 echo "macOS dmg: $DMG_FINAL"
