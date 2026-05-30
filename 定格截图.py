@@ -1,4 +1,7 @@
 from html import escape
+import ctypes
+import ctypes.util
+import os
 import platform
 import re
 import subprocess
@@ -18,6 +21,11 @@ try:
     from PIL import ImageGrab
 except ImportError:
     ImageGrab = None
+
+try:
+    from pynput import keyboard as pynput_keyboard
+except ImportError:
+    pynput_keyboard = None
 
 try:
     from PySide6.QtCore import (
@@ -42,6 +50,7 @@ try:
         QFont,
         QIcon,
         QImage,
+        QKeySequence,
         QPainter,
         QPainterPath,
         QPen,
@@ -55,6 +64,7 @@ try:
         QDialog,
         QFileDialog,
         QFrame,
+        QGraphicsOpacityEffect,
         QGridLayout,
         QHBoxLayout,
         QLabel,
@@ -115,7 +125,8 @@ SETTINGS_ORGANIZATION = "Anzhen"
 SETTINGS_APPLICATION = "TimedScreenshotTool"
 SETTINGS_LAYOUT_VERSION = 7
 APP_DISPLAY_NAME = "定格截图"
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
+DEFAULT_CAPTURE_SHORTCUT = "Ctrl+Shift+1"
 
 
 def app_base_dir() -> Path:
@@ -170,6 +181,163 @@ CLOSE_BEHAVIOR_QUIT = "quit"
 TRAY_STATE_IDLE = "idle"
 TRAY_STATE_ACTIVE = "active"
 TRAY_STATE_ERROR = "error"
+
+MAC_CARBON_AVAILABLE = False
+MAC_HOTKEY_EVENT_CLASS = int.from_bytes(b"keyb", "big")
+MAC_HOTKEY_EVENT_KIND_PRESSED = 5
+MAC_HOTKEY_SIGNATURE = int.from_bytes(b"DGSC", "big")
+MAC_HOTKEY_ID_CAPTURE_ONCE = 1
+
+
+class MacEventTypeSpec(ctypes.Structure):
+    _fields_ = [
+        ("eventClass", ctypes.c_uint32),
+        ("eventKind", ctypes.c_uint32),
+    ]
+
+
+class MacEventHotKeyID(ctypes.Structure):
+    _fields_ = [
+        ("signature", ctypes.c_uint32),
+        ("id", ctypes.c_uint32),
+    ]
+
+
+MacEventHandlerProc = ctypes.CFUNCTYPE(
+    ctypes.c_int32,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+)
+
+
+if platform.system() == "Darwin":
+    try:
+        _CARBON_PATH = ctypes.util.find_library("Carbon")
+        if _CARBON_PATH:
+            MAC_CARBON = ctypes.cdll.LoadLibrary(_CARBON_PATH)
+            MAC_CARBON.GetEventDispatcherTarget.argtypes = []
+            MAC_CARBON.GetEventDispatcherTarget.restype = ctypes.c_void_p
+            MAC_CARBON.InstallEventHandler.argtypes = [
+                ctypes.c_void_p,
+                MacEventHandlerProc,
+                ctypes.c_uint32,
+                ctypes.POINTER(MacEventTypeSpec),
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            MAC_CARBON.InstallEventHandler.restype = ctypes.c_int32
+            MAC_CARBON.RemoveEventHandler.argtypes = [ctypes.c_void_p]
+            MAC_CARBON.RemoveEventHandler.restype = ctypes.c_int32
+            MAC_CARBON.RegisterEventHotKey.argtypes = [
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                MacEventHotKeyID,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            MAC_CARBON.RegisterEventHotKey.restype = ctypes.c_int32
+            MAC_CARBON.UnregisterEventHotKey.argtypes = [ctypes.c_void_p]
+            MAC_CARBON.UnregisterEventHotKey.restype = ctypes.c_int32
+            MAC_CARBON_AVAILABLE = True
+        else:
+            MAC_CARBON = None
+    except Exception:
+        MAC_CARBON = None
+        MAC_CARBON_AVAILABLE = False
+else:
+    MAC_CARBON = None
+
+MAC_CARBON_CMD = 1 << 8
+MAC_CARBON_SHIFT = 1 << 9
+MAC_CARBON_OPTION = 1 << 11
+MAC_CARBON_CONTROL = 1 << 12
+
+MAC_CARBON_KEYCODES = {
+    "a": 0,
+    "s": 1,
+    "d": 2,
+    "f": 3,
+    "h": 4,
+    "g": 5,
+    "z": 6,
+    "x": 7,
+    "c": 8,
+    "v": 9,
+    "b": 11,
+    "q": 12,
+    "w": 13,
+    "e": 14,
+    "r": 15,
+    "y": 16,
+    "t": 17,
+    "1": 18,
+    "2": 19,
+    "3": 20,
+    "4": 21,
+    "6": 22,
+    "5": 23,
+    "=": 24,
+    "9": 25,
+    "7": 26,
+    "-": 27,
+    "8": 28,
+    "0": 29,
+    "]": 30,
+    "o": 31,
+    "u": 32,
+    "[": 33,
+    "i": 34,
+    "p": 35,
+    "return": 36,
+    "enter": 36,
+    "l": 37,
+    "j": 38,
+    "'": 39,
+    "k": 40,
+    ";": 41,
+    "\\": 42,
+    ",": 43,
+    "/": 44,
+    "n": 45,
+    "m": 46,
+    ".": 47,
+    "tab": 48,
+    "space": 49,
+    "`": 50,
+    "backspace": 51,
+    "esc": 53,
+    "delete": 117,
+    "home": 115,
+    "end": 119,
+    "left": 123,
+    "right": 124,
+    "down": 125,
+    "up": 126,
+    "pgup": 116,
+    "pgdown": 121,
+    "f1": 122,
+    "f2": 120,
+    "f3": 99,
+    "f4": 118,
+    "f5": 96,
+    "f6": 97,
+    "f7": 98,
+    "f8": 100,
+    "f9": 101,
+    "f10": 109,
+    "f11": 103,
+    "f12": 111,
+    "f13": 105,
+    "f14": 107,
+    "f15": 113,
+    "f16": 106,
+    "f17": 64,
+    "f18": 79,
+    "f19": 80,
+    "f20": 90,
+}
 
 BROWSER_APPS = (
     ("Google Chrome", "Chrome"),
@@ -480,10 +648,15 @@ def settings_page_icon_pixmap(page: str, size: int, color: str = "#4b4b51") -> Q
     icons = {
         "general": f"""
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-              <path d="M5 7h14M8 12h8M10 17h4" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
-              <circle cx="9" cy="7" r="2" fill="{color}"/>
-              <circle cx="14" cy="12" r="2" fill="{color}"/>
-              <circle cx="12" cy="17" r="2" fill="{color}"/>
+              <path d="M8 5h8a2 2 0 0 1 2 2v4H6V7a2 2 0 0 1 2-2Z" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round"/>
+              <path d="M6 11h12v2a5 5 0 0 1-5 5h-2a5 5 0 0 1-5-5v-2Z" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round"/>
+              <path d="M10 8h4" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+        """,
+        "shortcut": f"""
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+              <rect x="4" y="6" width="16" height="12" rx="3" fill="none" stroke="{color}" stroke-width="2"/>
+              <path d="M8 10h2M12 10h4M8 14h8" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round"/>
             </svg>
         """,
         "updates": f"""
@@ -521,6 +694,190 @@ def mac_application_icon_image():
     if not PYOBJC_AVAILABLE:
         return None
     return nsimage_from_pixmap(app_icon_pixmap(256))
+
+
+SHIFTED_SHORTCUT_KEYS = {
+    "!": "1",
+    "@": "2",
+    "#": "3",
+    "$": "4",
+    "%": "5",
+    "^": "6",
+    "&": "7",
+    "*": "8",
+    "(": "9",
+    ")": "0",
+    "_": "-",
+    "+": "=",
+    "{": "[",
+    "}": "]",
+    "|": "\\",
+    ":": ";",
+    '"': "'",
+    "<": ",",
+    ">": ".",
+    "?": "/",
+    "~": "`",
+}
+
+
+def normalize_shortcut_sequence(sequence: str) -> str:
+    text = (sequence or "").strip()
+    if not text:
+        return ""
+    key_sequence = QKeySequence.fromString(text, QKeySequence.PortableText)
+    normalized = key_sequence.toString(QKeySequence.PortableText).strip()
+    if not normalized:
+        return ""
+    if "," in normalized:
+        normalized = normalized.split(",", 1)[0].strip()
+    parts = [part.strip() for part in normalized.split("+") if part.strip()]
+    if parts and parts[-1] in SHIFTED_SHORTCUT_KEYS:
+        if "Shift" not in parts[:-1]:
+            parts.insert(len(parts) - 1, "Shift")
+        parts[-1] = SHIFTED_SHORTCUT_KEYS[parts[-1]]
+        normalized = "+".join(parts)
+    return normalized
+
+
+def shortcut_display_text(sequence: str) -> str:
+    normalized = normalize_shortcut_sequence(sequence)
+    if not normalized:
+        return "未设置"
+    key_sequence = QKeySequence.fromString(normalized, QKeySequence.PortableText)
+    return key_sequence.toString(QKeySequence.NativeText) or normalized
+
+
+def shortcut_to_pynput(sequence: str) -> str:
+    normalized = normalize_shortcut_sequence(sequence)
+    if not normalized:
+        return ""
+
+    if platform.system() == "Darwin":
+        modifier_map = {
+            "Ctrl": "<cmd>",
+            "Shift": "<shift>",
+            "Alt": "<alt>",
+            "Meta": "<ctrl>",
+        }
+    else:
+        modifier_map = {
+            "Ctrl": "<ctrl>",
+            "Shift": "<shift>",
+            "Alt": "<alt>",
+            "Meta": "<cmd>",
+        }
+    key_map = {
+        "Space": "<space>",
+        "Tab": "<tab>",
+        "Backtab": "<tab>",
+        "Backspace": "<backspace>",
+        "Return": "<enter>",
+        "Enter": "<enter>",
+        "Esc": "<esc>",
+        "Del": "<delete>",
+        "Delete": "<delete>",
+        "Insert": "<insert>",
+        "Home": "<home>",
+        "End": "<end>",
+        "Left": "<left>",
+        "Right": "<right>",
+        "Up": "<up>",
+        "Down": "<down>",
+        "PgUp": "<page_up>",
+        "PgDown": "<page_down>",
+    }
+
+    parts = [part.strip() for part in normalized.split("+") if part.strip()]
+    listener_parts: list[str] = []
+    non_modifier_key = ""
+    for part in parts:
+        if part in modifier_map:
+            listener_parts.append(modifier_map[part])
+            continue
+        if part in key_map:
+            non_modifier_key = key_map[part]
+            continue
+        if re.fullmatch(r"F([1-9]|1\d|2[0-4])", part):
+            non_modifier_key = f"<{part.lower()}>"
+            continue
+        if len(part) == 1:
+            non_modifier_key = part.lower()
+            continue
+        raise ValueError("快捷键暂时只支持常见组合键，请换一个简单一点的组合。")
+
+    if not non_modifier_key:
+        raise ValueError("快捷键至少需要包含一个可触发的按键。")
+
+    if listener_parts:
+        listener_parts.append(non_modifier_key)
+    else:
+        listener_parts = [non_modifier_key]
+    return "+".join(listener_parts)
+
+
+def shortcut_to_mac_carbon(sequence: str) -> tuple[int, int]:
+    normalized = normalize_shortcut_sequence(sequence)
+    if not normalized:
+        raise ValueError("快捷键为空。")
+
+    modifier_map = {
+        "Ctrl": MAC_CARBON_CMD,
+        "Shift": MAC_CARBON_SHIFT,
+        "Alt": MAC_CARBON_OPTION,
+        "Meta": MAC_CARBON_CONTROL,
+    }
+    key_name_map = {
+        "Space": "space",
+        "Tab": "tab",
+        "Backtab": "tab",
+        "Backspace": "backspace",
+        "Return": "return",
+        "Enter": "enter",
+        "Esc": "esc",
+        "Del": "delete",
+        "Delete": "delete",
+        "Insert": "insert",
+        "Home": "home",
+        "End": "end",
+        "Left": "left",
+        "Right": "right",
+        "Up": "up",
+        "Down": "down",
+        "PgUp": "pgup",
+        "PgDown": "pgdown",
+    }
+
+    modifiers = 0
+    keycode: Optional[int] = None
+    for part in [item.strip() for item in normalized.split("+") if item.strip()]:
+        if part in modifier_map:
+            modifiers |= modifier_map[part]
+            continue
+
+        lookup = key_name_map.get(part, part.lower())
+        if lookup == "insert":
+            raise ValueError("Mac 全局快捷键暂时不支持 Insert 键。")
+        if len(lookup) == 1 and lookup.isalpha():
+            lookup = lookup.lower()
+        if lookup not in MAC_CARBON_KEYCODES:
+            raise ValueError("这个快捷键暂时无法注册为 Mac 全局快捷键，请换一个常见按键。")
+        if keycode is not None:
+            raise ValueError("快捷键只能包含一个主按键。")
+        keycode = MAC_CARBON_KEYCODES[lookup]
+
+    if keycode is None:
+        raise ValueError("快捷键至少需要包含一个可触发的按键。")
+    return keycode, modifiers
+
+
+def portable_sequence_from_key_event(event) -> str:
+    key = event.key()
+    modifiers = event.modifiers()
+    key_value = int(getattr(key, "value", key))
+    modifier_value = int(getattr(modifiers, "value", modifiers))
+    sequence = QKeySequence(modifier_value | key_value).toString(QKeySequence.PortableText)
+    return normalize_shortcut_sequence(sequence)
 
 
 def version_parts(version: str) -> list[int]:
@@ -748,6 +1105,186 @@ class StatCard(QFrame):
         self.value_label.setText(value)
 
 
+class CountSummaryCard(QFrame):
+    def __init__(self, current_value: str, total_value: str):
+        super().__init__()
+        self.setObjectName("StatCard")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(14)
+
+        current_section = self.build_section("本次截图张数", current_value)
+        total_section = self.build_section("共截图张数", total_value)
+
+        divider = QFrame()
+        divider.setObjectName("StatDivider")
+        divider.setFixedWidth(1)
+
+        layout.addWidget(current_section, 1)
+        layout.addWidget(divider)
+        layout.addWidget(total_section, 1)
+
+    def build_section(self, title: str, value: str) -> QWidget:
+        section = QWidget()
+        section.setObjectName("CountStatSection")
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("StatTitle")
+        value_label = QLabel(value)
+        value_label.setObjectName("StatValue")
+
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+
+        if "本次" in title:
+            self.current_value_label = value_label
+        else:
+            self.total_value_label = value_label
+        return section
+
+    def set_current_value(self, value: str):
+        self.current_value_label.setText(value)
+
+    def set_total_value(self, value: str):
+        self.total_value_label.setText(value)
+
+
+class ShortcutBindingRow(QWidget):
+    hovered_changed = Signal(bool)
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("SettingsBindingRow")
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setMouseTracking(True)
+        self.hovered = False
+
+    def enterEvent(self, event):
+        self.set_hovered(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        QTimer.singleShot(0, self.refresh_hover_state)
+        super().leaveEvent(event)
+
+    def refresh_hover_state(self):
+        self.set_hovered(self.rect().contains(self.mapFromGlobal(QCursor.pos())))
+
+    def set_hovered(self, hovered: bool):
+        if self.hovered == hovered:
+            return
+        self.hovered = hovered
+        self.hovered_changed.emit(hovered)
+
+
+class ShortcutKeycapsWidget(QFrame):
+    edit_requested = Signal()
+    sequence_captured = Signal(str)
+
+    def __init__(self, sequence: str = ""):
+        super().__init__()
+        self.setObjectName("ShortcutKeycaps")
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setCursor(QCursor(Qt.PointingHandCursor))
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(14, 0, 14, 0)
+        self.layout.setSpacing(0)
+        self.layout.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.setFixedHeight(34)
+        self.recording = False
+        self.set_sequence(sequence)
+
+    def set_visual_state(self, state: str, minimum_width: int):
+        self.setProperty("state", state)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+        self.setMinimumWidth(minimum_width)
+
+    def set_sequence(self, sequence: str):
+        self.recording = False
+        while self.layout.count() > 0:
+            item = self.layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        is_empty = normalize_shortcut_sequence(sequence) == ""
+        label = QLabel("未设置" if is_empty else shortcut_display_text(sequence))
+        label.setObjectName("ShortcutKeycapText")
+        label.setAlignment(Qt.AlignCenter)
+        label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.layout.addWidget(label)
+        self.set_visual_state("empty" if is_empty else "ready", max(116, label.sizeHint().width() + 28))
+
+    def start_recording(self):
+        self.recording = True
+        while self.layout.count() > 0:
+            item = self.layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        placeholder = QLabel("按下新的快捷键")
+        placeholder.setObjectName("ShortcutKeycapText")
+        placeholder.setAlignment(Qt.AlignCenter)
+        placeholder.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.layout.addWidget(placeholder)
+        self.set_visual_state("recording", max(136, placeholder.sizeHint().width() + 28))
+        self.setFocus(Qt.OtherFocusReason)
+
+    def cancel_recording(self, sequence: str = ""):
+        self.recording = False
+        self.set_sequence(sequence)
+
+    def keyPressEvent(self, event):
+        if not self.recording:
+            super().keyPressEvent(event)
+            return
+        if event.isAutoRepeat():
+            event.accept()
+            return
+
+        key = event.key()
+        if key == Qt.Key_Escape:
+            self.recording = False
+            self.set_sequence("")
+            event.accept()
+            return
+
+        if key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta):
+            event.accept()
+            return
+
+        normalized = portable_sequence_from_key_event(event)
+        if normalized:
+            self.recording = False
+            self.sequence_captured.emit(normalized)
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and not self.recording:
+            self.setFocus(Qt.MouseFocusReason)
+            self.edit_requested.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def focusOutEvent(self, event):
+        if self.recording:
+            self.recording = False
+            self.set_sequence("")
+        super().focusOutEvent(event)
+
+
 class TimeChip(QFrame):
     remove_requested = Signal(str)
 
@@ -808,6 +1345,9 @@ if PYOBJC_AVAILABLE:
         def startCapture_(self, _sender):
             QTimer.singleShot(0, self.window.start_capture)
 
+        def captureOnce_(self, _sender):
+            QTimer.singleShot(0, self.window.capture_once)
+
         def stopCapture_(self, _sender):
             QTimer.singleShot(0, self.window.stop_capture)
 
@@ -817,6 +1357,7 @@ if PYOBJC_AVAILABLE:
 
 class ScreenshotWindow(QMainWindow):
     update_check_finished = Signal(object)
+    hotkey_triggered = Signal()
 
     def __init__(self):
         super().__init__()
@@ -830,10 +1371,12 @@ class ScreenshotWindow(QMainWindow):
         self.system_name = platform.system()
         self.save_dir = default_save_dir()
         self.capture_count = 0
+        self.total_capture_count = 0
         self.running = False
         self.overlay: Optional[SelectionOverlay] = None
         self.preview_overlay: Optional[RegionPreviewOverlay] = None
         self.next_capture_at: Optional[datetime] = None
+        self.pending_manual_resume_at: Optional[datetime] = None
         self.restore_geometry: Optional[QRect] = None
         self.restore_window_state = None
         self.report_lock = threading.Lock()
@@ -843,6 +1386,23 @@ class ScreenshotWindow(QMainWindow):
         self.update_check_button: Optional[QPushButton] = None
         self.update_check_silent = False
         self.auto_check_updates = True
+        self.capture_shortcut_sequence = DEFAULT_CAPTURE_SHORTCUT
+        self.capture_once_shortcut_action = QAction(self)
+        self.capture_once_shortcut_action.setShortcutContext(Qt.ApplicationShortcut)
+        self.capture_once_shortcut_action.triggered.connect(self.on_hotkey_triggered)
+        self.addAction(self.capture_once_shortcut_action)
+        self.settings_dialog: Optional[QDialog] = None
+        self.shortcut_binding_row: Optional[ShortcutBindingRow] = None
+        self.shortcut_preview_caps: Optional[ShortcutKeycapsWidget] = None
+        self.shortcut_reset_button: Optional[QPushButton] = None
+        self.shortcut_cancel_button: Optional[QPushButton] = None
+        self.shortcut_status_label: Optional[QLabel] = None
+        self.hotkey_listener = None
+        self.hotkey_listener_error = ""
+        self.mac_hotkey_handler_ref = None
+        self.mac_hotkey_ref = None
+        self.mac_hotkey_callback = None
+        self.settings_dialog_open = False
         self.latest_release_tag = ""
         self.latest_release_url = GITHUB_RELEASES_URL
         self.about_latest_version_label: Optional[QLabel] = None
@@ -850,6 +1410,7 @@ class ScreenshotWindow(QMainWindow):
         self.tray_menu: Optional[QMenu] = None
         self.tray_show_action: Optional[QAction] = None
         self.tray_start_action: Optional[QAction] = None
+        self.tray_capture_once_action: Optional[QAction] = None
         self.tray_stop_action: Optional[QAction] = None
         self.native_status_item = None
         self.native_status_button = None
@@ -857,6 +1418,7 @@ class ScreenshotWindow(QMainWindow):
         self.native_status_menu = None
         self.native_menu_show_item = None
         self.native_menu_start_item = None
+        self.native_menu_capture_once_item = None
         self.native_menu_stop_item = None
         self.native_menu_quit_item = None
         self.tray_context_menu_timer = QTimer(self)
@@ -872,6 +1434,8 @@ class ScreenshotWindow(QMainWindow):
         self.force_quit_requested = False
         self.tray_available = False
         self.last_runtime_error = ""
+        self.capture_in_progress = False
+        self.single_capture_mode = False
         self.capture_target = CAPTURE_TARGET_FULLSCREEN
         self.region_customized = False
         self.region = self.default_region()
@@ -882,10 +1446,10 @@ class ScreenshotWindow(QMainWindow):
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.on_timer_timeout)
         self.update_check_finished.connect(self.on_update_check_finished)
+        self.hotkey_triggered.connect(self.on_hotkey_triggered)
         app = QApplication.instance()
         if app is not None:
             app.applicationStateChanged.connect(self.on_application_state_changed)
-            app.installEventFilter(self)
         self.sync_mac_application_icon()
 
         self.build_ui()
@@ -960,6 +1524,10 @@ class ScreenshotWindow(QMainWindow):
         settings = QFrame()
         settings.setObjectName("Panel")
         settings.setMinimumWidth(520)
+        self.settings_panel = settings
+        self.settings_panel_effect = QGraphicsOpacityEffect(settings)
+        self.settings_panel_effect.setOpacity(1.0)
+        self.settings_panel.setGraphicsEffect(self.settings_panel_effect)
         settings_layout = QVBoxLayout(settings)
         settings_layout.setContentsMargins(20, 18, 20, 18)
         settings_layout.setSpacing(14)
@@ -979,7 +1547,7 @@ class ScreenshotWindow(QMainWindow):
         main.addWidget(side, 3)
 
         self.status_card = StatCard("当前状态", "未开始")
-        self.count_card = StatCard("已截图张数", "0")
+        self.count_card = CountSummaryCard("0", "0")
         side_layout.addWidget(self.status_card)
         side_layout.addWidget(self.count_card)
 
@@ -990,11 +1558,14 @@ class ScreenshotWindow(QMainWindow):
         side_layout.addStretch(1)
 
         self.start_button = self.make_button("开始截图", "primary")
+        self.capture_once_button = self.make_button("单次截图", "secondary")
         self.stop_button = self.make_button("停止截图", "danger")
         self.start_button.clicked.connect(self.start_capture)
+        self.capture_once_button.clicked.connect(self.capture_once)
         self.stop_button.clicked.connect(self.stop_capture)
         self.stop_button.setEnabled(False)
         side_layout.addWidget(self.start_button)
+        side_layout.addWidget(self.capture_once_button)
         side_layout.addWidget(self.stop_button)
 
     def build_path_section(self):
@@ -1414,6 +1985,13 @@ class ScreenshotWindow(QMainWindow):
                 font-size: 24px;
                 font-weight: 700;
             }
+            QFrame#StatDivider {
+                background: #e6e6eb;
+                border: none;
+                border-radius: 0;
+                min-width: 1px;
+                max-width: 1px;
+            }
             QFrame#Segment {
                 background: #ebebef;
                 border-radius: 10px;
@@ -1671,7 +2249,21 @@ class ScreenshotWindow(QMainWindow):
         button.style().polish(button)
         return button
 
+    def make_settings_table_header(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("SettingsTableHeaderLabel")
+        return label
+
     def show_settings_dialog(self):
+        if self.settings_dialog is not None:
+            try:
+                self.settings_dialog.show()
+                self.settings_dialog.raise_()
+                self.settings_dialog.activateWindow()
+                return
+            except RuntimeError:
+                self.settings_dialog = None
+
         dialog = QDialog(self)
         dialog.setObjectName("SettingsDialog")
         dialog.setWindowTitle("设置")
@@ -1680,7 +2272,10 @@ class ScreenshotWindow(QMainWindow):
         dialog.setMinimumSize(760, 520)
         if LOGO_PATH.exists():
             dialog.setWindowIcon(QIcon(app_icon_pixmap(256)))
+        self.settings_dialog = dialog
         dialog.finished.connect(self.on_settings_dialog_closed)
+        self.settings_dialog_open = True
+        self.stop_hotkey_listener()
 
         root = QVBoxLayout(dialog)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1705,7 +2300,7 @@ class ScreenshotWindow(QMainWindow):
         self.settings_page_group = QButtonGroup(dialog)
         self.settings_page_group.setExclusive(True)
         page_buttons: list[QPushButton] = []
-        for index, (title, page_key) in enumerate((("通用", "general"), ("更新", "updates"), ("关于", "about"))):
+        for index, (title, page_key) in enumerate((("关闭选项", "general"), ("快捷键", "shortcut"), ("更新", "updates"), ("关于", "about"))):
             button = QPushButton(title)
             button.setObjectName("SettingsPageButton")
             button.setCheckable(True)
@@ -1732,7 +2327,7 @@ class ScreenshotWindow(QMainWindow):
         general_layout = QVBoxLayout(general_page)
         general_layout.setContentsMargins(0, 0, 0, 0)
         general_layout.setSpacing(14)
-        general_title = QLabel("关闭行为")
+        general_title = QLabel("关闭选项")
         general_title.setObjectName("SettingsPageTitle")
         general_layout.addWidget(general_title)
 
@@ -1774,6 +2369,86 @@ class ScreenshotWindow(QMainWindow):
         general_card_layout.addWidget(self.close_behavior_hint_label)
         general_layout.addWidget(general_card)
         general_layout.addStretch(1)
+
+        shortcut_page = QWidget()
+        shortcut_layout = QVBoxLayout(shortcut_page)
+        shortcut_layout.setContentsMargins(0, 0, 0, 0)
+        shortcut_layout.setSpacing(14)
+        shortcut_title = QLabel("快捷键")
+        shortcut_title.setObjectName("SettingsPageTitle")
+        shortcut_layout.addWidget(shortcut_title)
+
+        shortcut_card = QFrame()
+        shortcut_card.setObjectName("SettingsCard")
+        shortcut_card_layout = QVBoxLayout(shortcut_card)
+        shortcut_card_layout.setContentsMargins(0, 0, 0, 0)
+        shortcut_card_layout.setSpacing(0)
+
+        shortcut_header = QWidget()
+        shortcut_header_layout = QHBoxLayout(shortcut_header)
+        shortcut_header_layout.setContentsMargins(18, 14, 18, 10)
+        shortcut_header_layout.setSpacing(16)
+        shortcut_header_layout.addWidget(self.make_settings_table_header("命令"), 1)
+        shortcut_header_layout.addWidget(self.make_settings_table_header("按键绑定"), 0, Qt.AlignLeft)
+        shortcut_card_layout.addWidget(shortcut_header)
+
+        shortcut_divider = QFrame()
+        shortcut_divider.setObjectName("SettingsBindingDivider")
+        shortcut_card_layout.addWidget(shortcut_divider)
+
+        shortcut_row = ShortcutBindingRow()
+        shortcut_row.hovered_changed.connect(self.on_shortcut_binding_row_hovered)
+        self.shortcut_binding_row = shortcut_row
+        shortcut_row_layout = QHBoxLayout(shortcut_row)
+        shortcut_row_layout.setContentsMargins(18, 14, 18, 14)
+        shortcut_row_layout.setSpacing(18)
+
+        command_column = QVBoxLayout()
+        command_column.setContentsMargins(0, 0, 0, 0)
+        command_column.setSpacing(4)
+        shortcut_command_title = QLabel("单次截图")
+        shortcut_command_title.setObjectName("SettingsBindingTitle")
+        command_column.addWidget(shortcut_command_title)
+        shortcut_command_desc = QLabel("按下后立即执行一轮单次截图")
+        shortcut_command_desc.setObjectName("SettingsBindingSubtitle")
+        command_column.addWidget(shortcut_command_desc)
+        shortcut_row_layout.addLayout(command_column, 1)
+
+        shortcut_binding_row = QHBoxLayout()
+        shortcut_binding_row.setContentsMargins(0, 0, 0, 0)
+        shortcut_binding_row.setSpacing(10)
+        self.shortcut_preview_caps = ShortcutKeycapsWidget(self.capture_shortcut_sequence)
+        self.shortcut_preview_caps.edit_requested.connect(self.begin_capture_shortcut_change)
+        self.shortcut_preview_caps.sequence_captured.connect(self.on_shortcut_sequence_captured)
+        shortcut_binding_row.addWidget(self.shortcut_preview_caps, 0, Qt.AlignLeft)
+
+        cancel_button = QPushButton("取消")
+        cancel_button.setObjectName("SettingsTextButton")
+        cancel_button.clicked.connect(self.cancel_shortcut_capture)
+        cancel_button.hide()
+        self.shortcut_cancel_button = cancel_button
+        shortcut_binding_row.addWidget(cancel_button, 0, Qt.AlignVCenter)
+
+        reset_shortcut_button = QPushButton("恢复默认")
+        reset_shortcut_button.setObjectName("SettingsTextButton")
+        reset_shortcut_button.clicked.connect(self.reset_shortcut_to_default)
+        self.shortcut_reset_button = reset_shortcut_button
+        shortcut_binding_row.addWidget(reset_shortcut_button, 0, Qt.AlignVCenter)
+        shortcut_row_layout.addLayout(shortcut_binding_row, 0)
+        shortcut_card_layout.addWidget(shortcut_row)
+
+        status_container = QWidget()
+        status_layout = QVBoxLayout(status_container)
+        status_layout.setContentsMargins(18, 0, 18, 18)
+        status_layout.setSpacing(0)
+
+        self.shortcut_status_label = QLabel()
+        self.shortcut_status_label.setObjectName("SettingsHintBox")
+        self.shortcut_status_label.setWordWrap(True)
+        status_layout.addWidget(self.shortcut_status_label)
+        shortcut_card_layout.addWidget(status_container)
+        shortcut_layout.addWidget(shortcut_card)
+        shortcut_layout.addStretch(1)
 
         updates_page = QWidget()
         updates_layout = QVBoxLayout(updates_page)
@@ -1886,6 +2561,7 @@ class ScreenshotWindow(QMainWindow):
         about_layout.addStretch(1)
 
         self.settings_page_stack.addWidget(general_page)
+        self.settings_page_stack.addWidget(shortcut_page)
         self.settings_page_stack.addWidget(updates_page)
         self.settings_page_stack.addWidget(about_page)
 
@@ -1984,6 +2660,39 @@ class ScreenshotWindow(QMainWindow):
                 color: #5c5c63;
                 font-size: 13px;
             }
+            QLabel#SettingsTableHeaderLabel {
+                color: #8b8b92;
+                font-size: 12px;
+                font-weight: 700;
+                padding: 0 2px;
+            }
+            QWidget#SettingsBindingRow {
+                background: transparent;
+            }
+            QWidget#SettingsBindingRow:hover {
+                background: #fbfbfd;
+            }
+            QFrame#SettingsBindingDivider {
+                background: #ededf1;
+                border: none;
+                min-height: 1px;
+                max-height: 1px;
+            }
+            QLabel#SettingsBindingTitle {
+                color: #1d1d1f;
+                font-size: 15px;
+                font-weight: 700;
+            }
+            QLabel#SettingsBindingSubtitle {
+                color: #6e6e73;
+                font-size: 13px;
+            }
+            QLabel#SettingsMiniLabel {
+                color: #6e6e73;
+                font-size: 12px;
+                font-weight: 700;
+                padding-left: 2px;
+            }
             QLabel#SettingsHintBox {
                 background: #f8f8fa;
                 border: 1px solid #e7e7ec;
@@ -1991,6 +2700,44 @@ class ScreenshotWindow(QMainWindow):
                 color: #6e6e73;
                 font-size: 13px;
                 padding: 10px 12px;
+            }
+            QFrame#ShortcutKeycaps {
+                background: #f3f3f6;
+                border: none;
+                border-radius: 10px;
+            }
+            QFrame#ShortcutKeycaps[state="recording"] {
+                background: #eef5ff;
+            }
+            QLabel#ShortcutKeycapText {
+                background: transparent;
+                border: none;
+                color: #1d1d1f;
+                font-size: 14px;
+                font-weight: 700;
+                min-height: 34px;
+                padding: 0;
+            }
+            QFrame#ShortcutKeycaps[state="empty"] QLabel#ShortcutKeycapText {
+                color: #8a8a92;
+                font-weight: 600;
+            }
+            QFrame#ShortcutKeycaps[state="recording"] QLabel#ShortcutKeycapText {
+                color: #0A84FF;
+                font-weight: 700;
+            }
+            QPushButton#SettingsTextButton {
+                background: transparent;
+                border: none;
+                border-radius: 0;
+                color: #6e6e73;
+                font-size: 13px;
+                font-weight: 600;
+                min-height: 30px;
+                padding: 0 4px;
+            }
+            QPushButton#SettingsTextButton:hover {
+                color: #1d1d1f;
             }
             QLabel#SettingsVersionLine {
                 color: #1d1d1f;
@@ -2051,16 +2798,31 @@ class ScreenshotWindow(QMainWindow):
         )
 
         self.refresh_close_behavior_ui()
+        self.refresh_shortcut_ui()
         self.refresh_latest_version_label()
         dialog.exec()
 
-    def on_settings_dialog_closed(self):
+    def on_settings_dialog_closed(self, _result=None):
+        self.settings_dialog_open = False
+        if self.shortcut_preview_caps is not None:
+            try:
+                if self.shortcut_preview_caps.recording:
+                    self.shortcut_preview_caps.cancel_recording(self.capture_shortcut_sequence)
+            except RuntimeError:
+                pass
+        self.settings_dialog = None
         self.about_latest_version_label = None
         self.close_behavior_hint_label = None
         self.close_to_tray_button = None
         self.close_to_quit_button = None
+        self.shortcut_binding_row = None
+        self.shortcut_preview_caps = None
+        self.shortcut_reset_button = None
+        self.shortcut_cancel_button = None
+        self.shortcut_status_label = None
         self.settings_page_group = None
         self.settings_page_stack = None
+        QTimer.singleShot(700, self.restart_hotkey_listener)
 
     def open_github(self):
         QDesktopServices.openUrl(QUrl(GITHUB_URL))
@@ -2105,6 +2867,237 @@ class ScreenshotWindow(QMainWindow):
         except RuntimeError:
             self.close_to_tray_button = None
             self.close_to_quit_button = None
+
+    def shortcut_status_text(self) -> str:
+        if self.shortcut_preview_caps is not None:
+            try:
+                if self.shortcut_preview_caps.recording:
+                    return "直接按下新的快捷键；如果不继续设置，快捷键就会保持关闭。"
+            except RuntimeError:
+                self.shortcut_preview_caps = None
+        if not self.capture_shortcut_sequence:
+            return "当前已关闭快捷键"
+        if self.system_name == "Darwin":
+            if self.hotkey_listener_error:
+                return f"Mac 全局快捷键没有成功启用：{self.hotkey_listener_error}。当前仅前台可用。"
+            return "按下后会立即执行一轮单次截图。如果没有反应，请到“系统设置 > 隐私与安全性 > 辅助功能”里允许。"
+        if pynput_keyboard is None:
+            return "当前环境缺少 pynput，暂时无法启用全局快捷键。"
+        if self.hotkey_listener_error:
+            return f"快捷键没有成功启用：{self.hotkey_listener_error}"
+        return "按下后会立即执行一轮单次截图。"
+
+    def refresh_shortcut_ui(self):
+        if self.shortcut_preview_caps is not None:
+            try:
+                if not self.shortcut_preview_caps.recording:
+                    self.shortcut_preview_caps.set_sequence(self.capture_shortcut_sequence)
+            except RuntimeError:
+                self.shortcut_preview_caps = None
+
+        recording = self.shortcut_preview_caps is not None and self.shortcut_preview_caps.recording
+
+        if self.shortcut_reset_button is not None:
+            try:
+                self.shortcut_reset_button.setVisible(not recording)
+            except RuntimeError:
+                self.shortcut_reset_button = None
+
+        if self.shortcut_cancel_button is not None:
+            try:
+                self.shortcut_cancel_button.setVisible(recording)
+            except RuntimeError:
+                self.shortcut_cancel_button = None
+
+        if self.shortcut_status_label is not None:
+            try:
+                self.shortcut_status_label.setText(self.shortcut_status_text())
+            except RuntimeError:
+                self.shortcut_status_label = None
+
+    def on_shortcut_binding_row_hovered(self, _hovered: bool):
+        return
+
+    def stop_hotkey_listener(self):
+        self.unregister_mac_hotkey()
+        listener = self.hotkey_listener
+        self.hotkey_listener = None
+        if listener is None:
+            return
+        try:
+            listener.stop()
+        except Exception:
+            pass
+
+    def setup_mac_hotkey_handler(self):
+        if self.mac_hotkey_handler_ref is not None:
+            return
+        if not MAC_CARBON_AVAILABLE or MAC_CARBON is None:
+            raise RuntimeError("当前环境无法使用 macOS 原生快捷键。")
+
+        def handler(_next_handler, _event, _user_data):
+            try:
+                QTimer.singleShot(0, self.emit_hotkey_trigger)
+            except Exception:
+                pass
+            return 0
+
+        self.mac_hotkey_callback = MacEventHandlerProc(handler)
+        event_type = MacEventTypeSpec(
+            MAC_HOTKEY_EVENT_CLASS,
+            MAC_HOTKEY_EVENT_KIND_PRESSED,
+        )
+        handler_ref = ctypes.c_void_p()
+        target = MAC_CARBON.GetEventDispatcherTarget()
+        result = MAC_CARBON.InstallEventHandler(
+            target,
+            self.mac_hotkey_callback,
+            1,
+            ctypes.byref(event_type),
+            None,
+            ctypes.byref(handler_ref),
+        )
+        if result != 0:
+            self.mac_hotkey_callback = None
+            raise RuntimeError(f"注册 Mac 快捷键处理器失败：{result}")
+        self.mac_hotkey_handler_ref = handler_ref
+
+    def register_mac_hotkey(self, sequence: str):
+        self.unregister_mac_hotkey()
+        if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+            self.refresh_shortcut_ui()
+            return
+        self.setup_mac_hotkey_handler()
+        keycode, modifiers = shortcut_to_mac_carbon(sequence)
+        hotkey_id = MacEventHotKeyID(MAC_HOTKEY_SIGNATURE, MAC_HOTKEY_ID_CAPTURE_ONCE)
+        hotkey_ref = ctypes.c_void_p()
+        target = MAC_CARBON.GetEventDispatcherTarget()
+        result = MAC_CARBON.RegisterEventHotKey(
+            keycode,
+            modifiers,
+            hotkey_id,
+            target,
+            0,
+            ctypes.byref(hotkey_ref),
+        )
+        if result != 0:
+            raise RuntimeError(f"注册 Mac 全局快捷键失败：{result}")
+        self.mac_hotkey_ref = hotkey_ref
+        self.capture_once_shortcut_action.setEnabled(False)
+
+    def unregister_mac_hotkey(self):
+        if self.mac_hotkey_ref is None or MAC_CARBON is None:
+            self.mac_hotkey_ref = None
+            return
+        try:
+            MAC_CARBON.UnregisterEventHotKey(self.mac_hotkey_ref)
+        except Exception:
+            pass
+        self.mac_hotkey_ref = None
+
+    def teardown_mac_hotkey_handler(self):
+        self.unregister_mac_hotkey()
+        if self.mac_hotkey_handler_ref is not None and MAC_CARBON is not None:
+            try:
+                MAC_CARBON.RemoveEventHandler(self.mac_hotkey_handler_ref)
+            except Exception:
+                pass
+        self.mac_hotkey_handler_ref = None
+        self.mac_hotkey_callback = None
+
+    def restart_hotkey_listener(self):
+        self.stop_hotkey_listener()
+        self.hotkey_listener_error = ""
+        self.refresh_app_shortcut()
+
+        if self.settings_dialog_open:
+            self.refresh_shortcut_ui()
+            return
+
+        if not self.capture_shortcut_sequence:
+            self.refresh_shortcut_ui()
+            return
+        if self.system_name == "Darwin":
+            try:
+                self.register_mac_hotkey(self.capture_shortcut_sequence)
+            except Exception as exc:  # noqa: BLE001
+                self.hotkey_listener_error = str(exc)
+            self.refresh_shortcut_ui()
+            return
+        if pynput_keyboard is None:
+            self.hotkey_listener_error = "缺少快捷键依赖 pynput。"
+            self.refresh_shortcut_ui()
+            return
+
+        try:
+            hotkey_spec = shortcut_to_pynput(self.capture_shortcut_sequence)
+            listener = pynput_keyboard.GlobalHotKeys({hotkey_spec: self.emit_hotkey_trigger})
+            listener.start()
+            self.hotkey_listener = listener
+        except Exception as exc:  # noqa: BLE001
+            self.hotkey_listener_error = str(exc)
+            self.hotkey_listener = None
+
+        self.refresh_shortcut_ui()
+
+    def refresh_app_shortcut(self):
+        sequence = normalize_shortcut_sequence(self.capture_shortcut_sequence)
+        shortcut = QKeySequence.fromString(sequence, QKeySequence.PortableText) if sequence else QKeySequence()
+        self.capture_once_shortcut_action.setShortcut(shortcut)
+        self.capture_once_shortcut_action.setEnabled(bool(sequence))
+
+    def update_capture_shortcut(self, sequence: str, persist: bool = True):
+        normalized = normalize_shortcut_sequence(sequence)
+        if normalized:
+            if self.system_name == "Darwin":
+                shortcut_to_mac_carbon(normalized)
+            else:
+                shortcut_to_pynput(normalized)
+        self.capture_shortcut_sequence = normalized
+        if persist:
+            self.settings.setValue("hotkey/capture_once", normalized)
+            self.settings.sync()
+        self.restart_hotkey_listener()
+
+    def begin_capture_shortcut_change(self):
+        self.update_capture_shortcut("")
+        if self.shortcut_preview_caps is not None:
+            try:
+                self.shortcut_preview_caps.start_recording()
+            except RuntimeError:
+                self.shortcut_preview_caps = None
+        self.refresh_shortcut_ui()
+
+    def cancel_shortcut_capture(self):
+        if self.shortcut_preview_caps is not None:
+            try:
+                self.shortcut_preview_caps.cancel_recording("")
+            except RuntimeError:
+                self.shortcut_preview_caps = None
+        self.refresh_shortcut_ui()
+
+    def on_shortcut_sequence_captured(self, sequence: str):
+        try:
+            self.update_capture_shortcut(sequence)
+        except ValueError as exc:
+            QMessageBox.warning(self, "快捷键不可用", str(exc))
+            self.refresh_shortcut_ui()
+
+    def reset_shortcut_to_default(self):
+        try:
+            self.update_capture_shortcut(DEFAULT_CAPTURE_SHORTCUT)
+        except ValueError as exc:
+            QMessageBox.warning(self, "快捷键不可用", str(exc))
+            return
+        self.refresh_shortcut_ui()
+
+    def emit_hotkey_trigger(self):
+        self.hotkey_triggered.emit()
+
+    def on_hotkey_triggered(self):
+        if self.force_quit_requested or self.capture_in_progress or self.settings_dialog_open:
+            return
+        self.capture_once()
 
     def set_close_behavior(self, behavior: str, persist: bool = True):
         if behavior not in {CLOSE_BEHAVIOR_ASK, CLOSE_BEHAVIOR_TRAY, CLOSE_BEHAVIOR_QUIT}:
@@ -2279,6 +3272,10 @@ class ScreenshotWindow(QMainWindow):
         self.tray_start_action.triggered.connect(self.start_capture)
         menu.addAction(self.tray_start_action)
 
+        self.tray_capture_once_action = QAction("单次截图", self)
+        self.tray_capture_once_action.triggered.connect(self.capture_once)
+        menu.addAction(self.tray_capture_once_action)
+
         self.tray_stop_action = QAction("停止截图", self)
         self.tray_stop_action.triggered.connect(self.stop_capture)
         menu.addAction(self.tray_stop_action)
@@ -2332,6 +3329,14 @@ class ScreenshotWindow(QMainWindow):
         self.native_menu_start_item.setTarget_(self.native_status_target)
         menu.addItem_(self.native_menu_start_item)
 
+        self.native_menu_capture_once_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "单次截图",
+            "captureOnce:",
+            "",
+        )
+        self.native_menu_capture_once_item.setTarget_(self.native_status_target)
+        menu.addItem_(self.native_menu_capture_once_item)
+
         self.native_menu_stop_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "停止截图",
             "stopCapture:",
@@ -2355,14 +3360,18 @@ class ScreenshotWindow(QMainWindow):
     def tray_state(self) -> str:
         if self.last_runtime_error:
             return TRAY_STATE_ERROR
-        if self.running:
+        if self.running or self.capture_in_progress:
             return TRAY_STATE_ACTIVE
         return TRAY_STATE_IDLE
 
     def tray_tooltip_text(self) -> str:
         if self.last_runtime_error:
             return f"{APP_DISPLAY_NAME}：运行失败"
+        if self.capture_in_progress and not self.running:
+            return f"{APP_DISPLAY_NAME}：正在停止当前截图"
         if self.running:
+            if self.single_capture_mode:
+                return f"{APP_DISPLAY_NAME}：单次截图进行中"
             return f"{APP_DISPLAY_NAME}：截图任务运行中"
         return f"{APP_DISPLAY_NAME}：待机中"
 
@@ -2376,7 +3385,9 @@ class ScreenshotWindow(QMainWindow):
         if self.tray_show_action is not None:
             self.tray_show_action.setText("显示主界面" if self.isHidden() else "隐藏主界面")
         if self.tray_start_action is not None:
-            self.tray_start_action.setEnabled(not self.running)
+            self.tray_start_action.setEnabled(not (self.running or self.capture_in_progress))
+        if self.tray_capture_once_action is not None:
+            self.tray_capture_once_action.setEnabled(not self.capture_in_progress and not self.single_capture_mode)
         if self.tray_stop_action is not None:
             self.tray_stop_action.setEnabled(self.running)
 
@@ -2403,7 +3414,9 @@ class ScreenshotWindow(QMainWindow):
             self.native_menu_show_item.setTitle_("显示主界面" if self.isHidden() else "隐藏主界面")
             self.native_menu_show_item.setEnabled_(True)
         if self.native_menu_start_item is not None:
-            self.native_menu_start_item.setEnabled_(not self.running)
+            self.native_menu_start_item.setEnabled_(not (self.running or self.capture_in_progress))
+        if self.native_menu_capture_once_item is not None:
+            self.native_menu_capture_once_item.setEnabled_(not self.capture_in_progress and not self.single_capture_mode)
         if self.native_menu_stop_item is not None:
             self.native_menu_stop_item.setEnabled_(self.running)
         if self.native_menu_quit_item is not None:
@@ -2470,19 +3483,25 @@ class ScreenshotWindow(QMainWindow):
     def set_mac_activation_policy(self, show_in_dock: bool):
         if self.system_name != "Darwin" or not PYOBJC_AVAILABLE:
             return
-        NSApp.setActivationPolicy_(
-            NSApplicationActivationPolicyRegular
-            if show_in_dock
-            else NSApplicationActivationPolicyAccessory
-        )
-        self.sync_mac_application_icon()
+        try:
+            NSApp.setActivationPolicy_(
+                NSApplicationActivationPolicyRegular
+                if show_in_dock
+                else NSApplicationActivationPolicyAccessory
+            )
+            self.sync_mac_application_icon()
+        except Exception:
+            return
 
     def sync_mac_application_icon(self):
         if self.system_name != "Darwin" or not PYOBJC_AVAILABLE:
             return
-        image = mac_application_icon_image()
-        if image is not None:
-            NSApp.setApplicationIconImage_(image)
+        try:
+            image = mac_application_icon_image()
+            if image is not None:
+                NSApp.setApplicationIconImage_(image)
+        except Exception:
+            return
 
     def show_main_window(self):
         self.set_mac_activation_policy(True)
@@ -2515,12 +3534,14 @@ class ScreenshotWindow(QMainWindow):
             self.native_status_menu = None
             self.native_menu_show_item = None
             self.native_menu_start_item = None
+            self.native_menu_capture_once_item = None
             self.native_menu_stop_item = None
             self.native_menu_quit_item = None
 
     def request_quit(self):
         self.force_quit_requested = True
         self.save_settings()
+        self.stop_hotkey_listener()
         self.teardown_tray_icon()
         self.close()
         QTimer.singleShot(0, QApplication.instance().quit)
@@ -2746,6 +3767,8 @@ class ScreenshotWindow(QMainWindow):
         self.daily_times = self.load_saved_times()
         self.render_time_chips()
         self.auto_check_updates = self.setting_bool("updates/auto_check", True)
+        saved_shortcut = self.settings.value("hotkey/capture_once", DEFAULT_CAPTURE_SHORTCUT)
+        self.capture_shortcut_sequence = normalize_shortcut_sequence(str(saved_shortcut))
         close_behavior = self.settings.value("window/close_behavior", "")
         if close_behavior in (CLOSE_BEHAVIOR_TRAY, CLOSE_BEHAVIOR_QUIT):
             self.close_behavior = str(close_behavior)
@@ -2787,6 +3810,7 @@ class ScreenshotWindow(QMainWindow):
         self.refresh_interval_preview()
         self.refresh_minute_preview()
         self.refresh_close_behavior_ui()
+        self.restart_hotkey_listener()
         self.update_tray_ui()
 
     def save_settings(self):
@@ -2808,6 +3832,7 @@ class ScreenshotWindow(QMainWindow):
         self.settings.setValue("region/width", self.region.width)
         self.settings.setValue("region/height", self.region.height)
         self.settings.setValue("updates/auto_check", self.auto_check_updates)
+        self.settings.setValue("hotkey/capture_once", self.capture_shortcut_sequence)
         self.settings.setValue("window/close_behavior", "" if self.close_behavior == CLOSE_BEHAVIOR_ASK else self.close_behavior)
         if self.custom_region is not None:
             self.settings.setValue("region/custom_x", self.custom_region.x)
@@ -2902,6 +3927,7 @@ class ScreenshotWindow(QMainWindow):
     def closeEvent(self, event):
         if self.force_quit_requested:
             self.save_settings()
+            self.stop_hotkey_listener()
             event.accept()
             return
 
@@ -2918,6 +3944,7 @@ class ScreenshotWindow(QMainWindow):
             if behavior == CLOSE_BEHAVIOR_QUIT:
                 self.force_quit_requested = True
                 self.save_settings()
+                self.stop_hotkey_listener()
                 self.teardown_tray_icon()
                 event.accept()
                 QTimer.singleShot(0, QApplication.instance().quit)
@@ -2926,10 +3953,17 @@ class ScreenshotWindow(QMainWindow):
             return
 
         self.save_settings()
+        self.stop_hotkey_listener()
         event.accept()
 
     def refresh_path(self):
         self.path_value.setText(f"{self.save_dir}\n按日期自动保存到 {self.dated_save_dir().name}/")
+
+    def refresh_capture_action_buttons(self):
+        has_active_session = self.running or self.capture_in_progress
+        self.start_button.setEnabled(not has_active_session)
+        self.capture_once_button.setEnabled(not self.capture_in_progress and not self.single_capture_mode)
+        self.stop_button.setEnabled(self.running)
 
     def dated_save_dir(self, captured_at: Optional[datetime] = None) -> Path:
         value = captured_at or datetime.now()
@@ -2958,6 +3992,9 @@ class ScreenshotWindow(QMainWindow):
         for widget in widgets:
             widget.setEnabled(not locked)
 
+        if hasattr(self, "settings_panel_effect") and self.settings_panel_effect is not None:
+            self.settings_panel_effect.setOpacity(0.76 if locked else 1.0)
+
         self.sync_region_buttons()
 
     def refresh_region(self):
@@ -2973,6 +4010,16 @@ class ScreenshotWindow(QMainWindow):
         self.region_value.setText(text)
 
     def refresh_idle_note(self):
+        if self.capture_in_progress and not self.running:
+            self.note_label.setText("正在停止，当前这一轮结束后就会停下")
+            self.update_tray_ui()
+            return
+
+        if self.running and self.single_capture_mode:
+            self.note_label.setText("单次截图执行中")
+            self.update_tray_ui()
+            return
+
         if self.running and self.next_capture_at is not None:
             self.note_label.setText(
                 f"下一次截图\n{self.next_capture_at.strftime('%Y-%m-%d %H:%M:%S')}"
@@ -3773,6 +4820,8 @@ class ScreenshotWindow(QMainWindow):
         total_count: Optional[int] = None,
         title: str = "",
     ):
+        if not self.running:
+            return
         self.status_card.set_value("正在截图")
         if total_count is not None and total_count > 0:
             text = f"正在截图 {browser_name} 第 {current_index}/{total_count} 个标签页"
@@ -3811,14 +4860,20 @@ class ScreenshotWindow(QMainWindow):
         was_hidden = self.isHidden()
         try:
             for index, tab in enumerate(tabs, start=1):
-                if len(records) >= max_count:
+                if len(records) >= max_count or not self.running:
                     break
 
                 self.set_browser_capture_progress(tab.display_name, index, total_count, tab.title)
+                if not self.running:
+                    break
                 self.activate_browser_tab(tab)
                 QApplication.processEvents()
+                if not self.running:
+                    break
                 time.sleep(0.45)
                 QApplication.processEvents()
+                if not self.running:
+                    break
 
                 region = self.front_browser_window_region(tab.app_name)
                 browser_name = self.safe_filename_part(tab.display_name, "Browser")
@@ -3941,16 +4996,18 @@ class ScreenshotWindow(QMainWindow):
         records: list[CaptureRecord] = []
         try:
             for window_index, (hwnd, browser_name, _title) in enumerate(browser_windows, start=1):
-                if len(records) >= max_count:
+                if len(records) >= max_count or not self.running:
                     break
 
                 self.activate_windows_window(hwnd)
                 time.sleep(WINDOWS_BROWSER_PAGE_DELAY_SECONDS)
+                if not self.running:
+                    break
                 first_title = self.windows_window_title(hwnd)
                 seen_titles: set[str] = set()
 
                 for _ in range(WINDOWS_BROWSER_TAB_SAFETY_LIMIT):
-                    if len(records) >= max_count:
+                    if len(records) >= max_count or not self.running:
                         break
 
                     current_title = self.windows_window_title(hwnd)
@@ -3987,6 +5044,8 @@ class ScreenshotWindow(QMainWindow):
                     self.send_windows_ctrl_tab()
                     time.sleep(WINDOWS_BROWSER_PAGE_DELAY_SECONDS)
                     QApplication.processEvents()
+                    if not self.running:
+                        break
 
                     if self.windows_window_title(hwnd) == first_title and len(seen_titles) > 0:
                         break
@@ -4017,28 +5076,102 @@ class ScreenshotWindow(QMainWindow):
                 )
                 return
 
+        self.begin_capture_run(single_capture=False)
+
+    def capture_once(self):
+        if self.capture_in_progress:
+            QMessageBox.information(self, "正在截图", "请先等待当前这轮截图完成。")
+            return
+
+        if self.capture_target == CAPTURE_TARGET_BROWSER:
+            try:
+                self.ensure_browser_capture_ready()
+            except Exception as exc:  # noqa: BLE001
+                self.status_card.set_value("未开始")
+                self.note_label.setText(f"浏览器截图未准备好：{exc}")
+                QMessageBox.warning(
+                    self,
+                    "浏览器截图未准备好",
+                    f"{exc}",
+                )
+                return
+
+        if self.running:
+            self.pending_manual_resume_at = self.next_capture_at
+            self.timer.stop()
+            self.next_capture_at = None
+            self.status_card.set_value("准备截图")
+            self.note_label.setText("立即执行一轮截图；若原定时间未过，则继续按原计划")
+            self.update_tray_ui()
+            QTimer.singleShot(0, self.on_timer_timeout)
+            return
+
+        self.begin_capture_run(single_capture=True)
+
+    def begin_capture_run(self, single_capture: bool):
         self.dated_save_dir().mkdir(parents=True, exist_ok=True)
         self.running = True
+        self.capture_in_progress = False
+        self.single_capture_mode = single_capture
         self.last_runtime_error = ""
+        self.pending_manual_resume_at = None
         self.capture_count = 0
-        self.count_card.set_value("0")
-        self.status_card.set_value("等待执行")
-        self.start_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
+        self.count_card.set_current_value("0")
+        self.count_card.set_total_value(str(self.total_capture_count))
         self.set_capture_options_locked(True)
+        self.refresh_capture_action_buttons()
         self.update_tray_ui()
+        if single_capture:
+            self.next_capture_at = None
+            self.status_card.set_value("准备截图")
+            self.note_label.setText("单次截图准备中")
+            QTimer.singleShot(0, self.on_timer_timeout)
+            return
+
+        self.status_card.set_value("等待执行")
         self.schedule_next_capture()
 
     def stop_capture(self):
+        if self.capture_in_progress:
+            self.running = False
+            self.next_capture_at = None
+            self.pending_manual_resume_at = None
+            self.timer.stop()
+            self.last_runtime_error = ""
+            self.status_card.set_value("正在停止")
+            self.refresh_capture_action_buttons()
+            self.refresh_idle_note()
+            return
+
         self.running = False
+        self.capture_in_progress = False
+        self.single_capture_mode = False
         self.next_capture_at = None
+        self.pending_manual_resume_at = None
         self.timer.stop()
         self.last_runtime_error = ""
         self.status_card.set_value("已停止")
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
         self.set_capture_options_locked(False)
+        self.refresh_capture_action_buttons()
         self.refresh_idle_note()
+
+    def restore_pending_capture_schedule(self) -> bool:
+        scheduled_at = self.pending_manual_resume_at
+        self.pending_manual_resume_at = None
+        if scheduled_at is None or not self.running:
+            return False
+
+        now = datetime.now()
+        if scheduled_at <= now:
+            return False
+
+        self.next_capture_at = scheduled_at
+        delay_seconds = max((scheduled_at - now).total_seconds(), 0.5)
+        self.status_card.set_value("等待执行")
+        self.timer.start(max(500, int(delay_seconds * 1000)))
+        self.refresh_capture_action_buttons()
+        self.refresh_idle_note()
+        return True
 
     def schedule_next_capture(self):
         if not self.running:
@@ -4058,6 +5191,7 @@ class ScreenshotWindow(QMainWindow):
 
         self.status_card.set_value("等待执行")
         self.timer.start(max(500, int(delay_seconds * 1000)))
+        self.refresh_capture_action_buttons()
         self.refresh_idle_note()
 
     def next_daily_datetime(self, now: datetime) -> datetime:
@@ -4087,23 +5221,28 @@ class ScreenshotWindow(QMainWindow):
         return candidate
 
     def on_timer_timeout(self):
-        if not self.running:
+        if self.capture_in_progress or not self.running:
             return
 
+        self.capture_in_progress = True
         self.status_card.set_value("正在截图")
+        self.refresh_capture_action_buttons()
+        self.update_tray_ui()
         QApplication.processEvents()
 
         try:
             saved_count = self.save_screenshot()
         except Exception as exc:  # noqa: BLE001
+            self.capture_in_progress = False
             self.running = False
+            self.single_capture_mode = False
             self.timer.stop()
             self.next_capture_at = None
+            self.pending_manual_resume_at = None
             self.last_runtime_error = str(exc)
             self.status_card.set_value("运行失败")
-            self.start_button.setEnabled(True)
-            self.stop_button.setEnabled(False)
             self.set_capture_options_locked(False)
+            self.refresh_capture_action_buttons()
             self.note_label.setText(f"截图失败：{exc}")
             self.update_tray_ui()
             QMessageBox.critical(
@@ -4113,19 +5252,53 @@ class ScreenshotWindow(QMainWindow):
             )
             return
 
+        self.capture_in_progress = False
         self.capture_count += max(0, saved_count)
-        self.count_card.set_value(str(self.capture_count))
-        if self.capture_count >= MAX_CAPTURE_IMAGES_PER_RUN:
-            self.running = False
+        self.total_capture_count += max(0, saved_count)
+        self.count_card.set_current_value(str(self.capture_count))
+        self.count_card.set_total_value(str(self.total_capture_count))
+        if not self.running:
+            self.single_capture_mode = False
             self.timer.stop()
             self.next_capture_at = None
+            self.pending_manual_resume_at = None
+            self.last_runtime_error = ""
+            self.status_card.set_value("已停止")
+            self.set_capture_options_locked(False)
+            self.refresh_capture_action_buttons()
+            self.note_label.setText(f"截图已停止，本次任务共保存 {self.capture_count} 张")
+            self.update_tray_ui()
+            return
+
+        if self.single_capture_mode:
+            self.running = False
+            self.single_capture_mode = False
+            self.timer.stop()
+            self.next_capture_at = None
+            self.pending_manual_resume_at = None
             self.last_runtime_error = ""
             self.status_card.set_value("已完成")
-            self.start_button.setEnabled(True)
-            self.stop_button.setEnabled(False)
             self.set_capture_options_locked(False)
+            self.refresh_capture_action_buttons()
+            self.note_label.setText(f"单次截图已完成，本次保存 {saved_count} 张")
+            self.update_tray_ui()
+            return
+
+        if self.capture_count >= MAX_CAPTURE_IMAGES_PER_RUN:
+            self.running = False
+            self.single_capture_mode = False
+            self.timer.stop()
+            self.next_capture_at = None
+            self.pending_manual_resume_at = None
+            self.last_runtime_error = ""
+            self.status_card.set_value("已完成")
+            self.set_capture_options_locked(False)
+            self.refresh_capture_action_buttons()
             self.note_label.setText(f"已达到单次 {MAX_CAPTURE_IMAGES_PER_RUN:,} 张上限，截图已自动停止")
             self.update_tray_ui()
+            return
+
+        if self.restore_pending_capture_schedule():
             return
 
         self.schedule_next_capture()
